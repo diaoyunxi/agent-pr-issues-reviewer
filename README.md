@@ -773,6 +773,26 @@ Gitee 场景：`provider=gitee` 时，把 `post_comment` 换成 Gitee 的 `POST 
    超限会被截断，宁可让模型少看也不要直接报错。
 8. **失败必回写**：Agent 任何异常都会转成一条「审查失败」评论，不会静默丢任务。
 
+## 二次开发约定
+
+改动 `worker/src`、`agent/src` 或 `control-repo/.github/workflows/ai-review.yml` 时，README 里内嵌的对应代码块
+必须同步更新——文档与代码不一致会直接误导部署者。可以用一段脚本自查：
+
+```bash
+python - <<'PY'
+import pathlib, re
+readme = pathlib.Path('README.md').read_text()
+blocks = re.findall(r'```(ts|python|yaml)\n(.*?)```', readme, re.S)
+for path, lang, idx in [('worker/src/index.ts', 'ts', 0),
+                        ('agent/src/mini_agent.py', 'python', 0),
+                        ('agent/src/review.py', 'python', 1),
+                        ('control-repo/.github/workflows/ai-review.yml', 'yaml', 0)]:
+    cands = [b for l, b in blocks if l == lang]
+    assert cands[idx].strip() == pathlib.Path(path).read_text().strip(), path
+print('README 代码块与源文件一致')
+PY
+```
+
 ## 本地验证
 
 ```bash
