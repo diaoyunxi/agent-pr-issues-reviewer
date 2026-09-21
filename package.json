@@ -1,5 +1,5 @@
 {
-  "name": "agent-pr-reviewer-worker",
+  "name": "agent-pr-reviewer",
   "private": true,
   "type": "module",
   "scripts": {
