@@ -1,0 +1,102 @@
+name: AI Review
+
+on:
+  push:
+    paths:
+      - 'tasks/*.json'
+  # 备用触发方式：不依赖 Push，避免清理 JSON 造成仓库膨胀
+  repository_dispatch:
+    types: [ai-review]
+
+# 同一 PR 的多次提交只保留最新一次审查，旧任务直接被取消
+concurrency:
+  group: ai-review-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout control repo
+        uses: actions/checkout@v4
+        with:
+          # 需要 push 回清理提交，用 PAT 而不是默认 GITHUB_TOKEN
+          token: ${{ secrets.PAT_TOKEN }}
+          fetch-depth: 2
+
+      - name: Read task payload
+        id: task
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            # repository_dispatch 模式下目标信息直接来自 client_payload
+            echo '${{ toJson(github.event.client_payload) }}' > /tmp/task.json
+            TASK_FILE=""
+          else
+            # 取本次 push 新增的 JSON；用 diff-tree，避免被其它改动干扰
+            TASK_FILE=$(git diff-tree --no-commit-id --name-only -r "${{ github.sha }}" | grep '^tasks/.*\.json$' | head -n 1 || true)
+            if [ -z "$TASK_FILE" ]; then
+              echo "无任务文件，跳过" && exit 0
+            fi
+            cp "$TASK_FILE" /tmp/task.json
+          fi
+
+          echo "task_file=$TASK_FILE" >> "$GITHUB_OUTPUT"
+          echo "provider=$(jq -r '.provider' /tmp/task.json)" >> "$GITHUB_OUTPUT"
+          echo "target_repo=$(jq -r '.repo' /tmp/task.json)" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$(jq -r '.pr_number' /tmp/task.json)" >> "$GITHUB_OUTPUT"
+          echo "is_issue=$(jq -r '.is_issue' /tmp/task.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.task.outputs.target_repo }}
+          token: ${{ secrets.PAT_TOKEN }}
+          path: target-repo
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install agent deps
+        working-directory: target-repo
+        run: |
+          if [ -f agent/requirements.txt ]; then
+            pip install -r agent/requirements.txt
+          fi
+
+      - name: Run AI agent
+        working-directory: target-repo
+        env:
+          # Agent 内用 PAT 读写目标仓库的 PR 评论
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          AI_API_BASE: ${{ secrets.AI_API_BASE }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_MODEL: ${{ secrets.AI_MODEL }}
+          TARGET_REPO: ${{ steps.task.outputs.target_repo }}
+          PR_NUMBER: ${{ steps.task.outputs.pr_number }}
+          IS_ISSUE: ${{ steps.task.outputs.is_issue }}
+          PROVIDER: ${{ steps.task.outputs.provider }}
+        run: python agent/review.py
+
+      - name: Cleanup task file
+        if: always()
+        run: |
+          set -euo pipefail
+          TASK_FILE="${{ steps.task.outputs.task_file }}"
+          if [ -z "$TASK_FILE" ] || [ ! -f "$TASK_FILE" ]; then
+            echo "无任务文件需要清理" && exit 0
+          fi
+          git rm -f "$TASK_FILE"
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "chore: cleanup task [skip ci]"
+          # 清理提交只改 tasks/，配合 paths 过滤不会再触发本 workflow；
+          # [skip ci] 是双保险，防止其它配置误触
+          git push

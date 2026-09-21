@@ -1,0 +1,12 @@
+{
+  "provider": "github",
+  "repo": "owner/target-repo",
+  "pr_number": 42,
+  "is_issue": false,
+  "title": "feat: 支持自定义构建缓存",
+  "body": "PR 描述……",
+  "html_url": "https://github.com/owner/target-repo/pull/42",
+  "user": "someone",
+  "action": "opened",
+  "created_at": "2026-09-21T13:43:55.000Z"
+}

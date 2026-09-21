@@ -1,0 +1,9 @@
+name = "agent-pr-reviewer"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+# 密钥用 `wrangler secret put` 写入，不要写在本文件里
+# GITHUB_PAT / GITHUB_WEBHOOK_SECRET / GITEE_WEBHOOK_SECRET
+
+[vars]
+CONTROL_REPO = "your-org/ai-review-control"
