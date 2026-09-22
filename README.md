@@ -33,11 +33,11 @@
 
 ```text
 .
-├── worker/                 # 模块一：Cloudflare Worker
-│   ├── src/index.ts        #   签名校验 / 信息提取 / 触发中转
-│   ├── wrangler.toml       #   Worker 配置（密钥用 wrangler secret 注入）
-│   ├── package.json
-│   └── tsconfig.json
+├── wrangler.toml           # 模块一：Cloudflare Worker 配置（放根目录，Git 集成自动识别）
+├── package.json            #   Worker 依赖与 deploy 脚本
+├── tsconfig.json           #   Worker 类型检查配置
+├── worker/
+│   └── src/index.ts        #   签名校验 / 信息提取 / 触发中转
 ├── control-repo/           # 中转仓库（内容需复制到中转仓库根目录）
 │   └── .github/workflows/
 │       └── ai-review.yml   # 模块二：GitHub Actions
@@ -49,12 +49,18 @@
         └── task_schema.json#   任务 JSON 的字段示例
 ```
 
+> Worker 的 `wrangler.toml` / `package.json` / `tsconfig.json` 都放在**仓库根目录**，
+> 这样 Cloudflare 的 Git 集成（Workers Builds）无需额外配置 root directory 就能自动部署；
+> 入口文件通过 `wrangler.toml` 的 `main = "worker/src/index.ts"` 指向。
+
 ## 部署步骤
 
 1. **中转仓库**：新建公开仓库，把 `control-repo/.github/workflows/ai-review.yml` 放进去，创建空的 `tasks/` 目录。
 2. **目标仓库**：把 `agent/` 目录放进目标仓库，并在仓库里配好 `AI_API_BASE` / `AI_API_KEY` 对应的 Secrets（若走 Actions 侧注入则无需）。
    目标仓库自身的 workflow 不需要改动，审查由中转仓库代跑。
-3. **Worker**：`cd worker && npx wrangler secret put GITHUB_PAT`，逐个写入密钥后 `npx wrangler deploy`。
+3. **Worker**：在**仓库根目录**执行 `npx wrangler secret put GITHUB_PAT`，逐个写入密钥后 `npx wrangler deploy`。
+   若用 Cloudflare 控制台的 **Workers Builds（连接 Git 仓库）**，直接绑定本仓库即可：
+   build 命令留空、deploy 命令用默认的 `npx wrangler deploy`，根目录就是仓库根，无需再改 root directory。
 4. **配置 Webhook**：在 GitHub/Gitee 仓库设置里把 Webhook 指向 Worker 域名，内容类型 `application/json`，填入同一份密钥。
 
 ---
@@ -331,7 +337,7 @@ function base64Encode(input: string): string {
 密钥通过 `wrangler secret put` 注入，不写进 `wrangler.toml`：
 
 ```bash
-cd worker
+# 在仓库根目录执行（wrangler.toml 也在根目录）
 npx wrangler secret put GITHUB_PAT            # 有 repo 权限，能写中转仓库
 npx wrangler secret put GITHUB_WEBHOOK_SECRET
 npx wrangler secret put GITEE_WEBHOOK_SECRET  # 只接 GitHub 时可省略
@@ -796,8 +802,8 @@ PY
 ## 本地验证
 
 ```bash
-# Worker 类型检查
-cd worker && npm install && npx tsc --noEmit
+# Worker 类型检查（依赖装在根目录）
+npm install && npx tsc --noEmit
 
 # Agent 语法与依赖
 cd agent && pip install -r requirements.txt && python -m py_compile src/mini_agent.py src/review.py
