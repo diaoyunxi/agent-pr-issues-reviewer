@@ -574,6 +574,15 @@ GitHub 用私钥签 JWT 换安装令牌（`cryptography` 做 RS256 签名），G
 `AgentTools` 一套实现同时支持 GitHub 与 Gitee——按 `provider` 选 API 基址、鉴权头与端点，
 PR 走 `pulls`、Issue 走 `issues`，所有读请求都通过 `TokenProvider` 取令牌。
 
+喂给模型的上下文 = **PR 标题 + PR 描述 + 改动文件清单 + diff +（模型按需读取的文件内容）**：
+
+- `pr_meta()` 同时取 `title` 与 `body`，描述里写的意图、关联 Issue、验证方式模型都能看到；
+  描述超 4000 字符（`MAX_BODY_CHARS`）会截断。
+- `pr_meta()` 还会记下 PR 的 `head.sha`，作为 `read_file` 的**默认 ref**：
+  不传 ref 时读的是「PR 改动后的版本」而不是仓库默认分支——否则 PR 新增的文件会 404、
+  改过的文件会读到旧内容。Issue 场景没有 head，才退回默认分支。
+- `read_file` 的 `ref` 参数也开放给模型（commit sha / 分支名），需要时能主动读其它版本。
+
 ```python
 """一个够用的工具调用 Agent：让模型自己决定拉取哪些文件，再产出审查意见。
 
@@ -591,6 +600,8 @@ from app_auth import TokenProvider, gitee_auth_headers
 MAX_DIFF_CHARS = 60_000
 MAX_FILE_CHARS = 20_000
 MAX_TOOL_ROUNDS = 6
+# PR 描述同样可能很长（贴日志、贴长文），也做一次截断
+MAX_BODY_CHARS = 4_000
 
 GITHUB_API = "https://api.github.com"
 GITEE_API = "https://gitee.com/api/v5"
@@ -618,6 +629,8 @@ class AgentTools:
         self.platform = provider.provider
         default_base = GITEE_API if self.platform == "gitee" else GITHUB_API
         self.api_base = (api_base or provider.api_base or default_base).rstrip("/")
+        # PR 分支的 head commit，pr_meta() 里填充，供 read_file 默认按它读取
+        self.head_sha = ""
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "ai-review-agent"})
 
@@ -658,12 +671,20 @@ class AgentTools:
         return f"/repos/{self.repo}/{kind}/{self.pr_number}{path_suffix}"
 
     def pr_meta(self) -> dict:
-        """PR/Issue 标题与改动统计。"""
+        """PR/Issue 标题、描述与改动统计。
+
+        描述（body）也是模型判断改动意图的重要输入，一并带出去，
+        否则模型只能靠 diff 猜作者的意图。
+        """
         detail = self._get(self._issue_or_pr())
         title = detail.get("title") or ""
+        body = detail.get("body") or ""
+        # 记录 head sha 作为 read_file 的默认 ref：PR 分支上的新文件与
+        # 改过但未合并的文件，只有按 head 读才是「本次改动后的版本」
+        self.head_sha = (detail.get("head") or {}).get("sha") or ""
 
         if self.is_issue:
-            return {"title": title, "changed_files": []}
+            return {"title": title, "body": body, "changed_files": []}
 
         if self.platform == "gitee":
             files = self._get(self._issue_or_pr("/files"))
@@ -674,6 +695,7 @@ class AgentTools:
 
         return {
             "title": title,
+            "body": body,
             "changed_files": [
                 {
                     "filename": f.get("filename") or f.get("new_path") or "",
@@ -712,9 +734,15 @@ class AgentTools:
         return "\n".join(chunks)[:MAX_DIFF_CHARS]
 
     def read_file(self, path: str, ref: str | None = None) -> str:
-        """读取目标仓库里某个文件的完整内容，供模型补充上下文。"""
+        """读取目标仓库里某个文件的完整内容，供模型补充上下文。
+
+        不显式传 ref 时默认读 PR 的 head commit，而不是仓库默认分支：
+        默认分支上没有 PR 新增的文件（会 404），改过的文件也只是旧版本。
+        PR 的 head 拿不到（Issue 场景）时才退回默认分支。
+        """
         import base64
 
+        ref = ref or self.head_sha or None
         data = self._get(f"/repos/{self.repo}/contents/{path}", **({"ref": ref} if ref else {}))
         content = data.get("content")
         if not content:
@@ -735,15 +763,35 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "读取仓库中某个文件的完整内容，用于理解上下文",
+            "description": (
+                "读取本 PR 分支（head）上某个文件的完整内容，用于理解上下文；"
+                "不传 ref 时读的就是 PR 改动后的版本"
+            ),
             "parameters": {
                 "type": "object",
-                "properties": {"path": {"type": "string", "description": "文件路径"}},
+                "properties": {
+                    "path": {"type": "string", "description": "文件路径"},
+                    "ref": {
+                        "type": "string",
+                        "description": "可选，commit sha 或分支名；默认读 PR 的 head commit",
+                    },
+                },
                 "required": ["path"],
             },
         },
     },
 ]
+
+
+def _context_message(meta: dict) -> str:
+    """拼给模型的初始上下文：标题 + 描述 + 改动文件清单。"""
+    body = (meta.get("body") or "").strip()
+    body = body[:MAX_BODY_CHARS] if body else "（无描述）"
+    return (
+        f"PR 标题：{meta['title']}\n"
+        f"PR 描述：{body}\n"
+        f"改动文件：{json.dumps(meta['changed_files'], ensure_ascii=False)}"
+    )
 
 
 class ReviewAgent:
@@ -773,10 +821,11 @@ class ReviewAgent:
             return self.tools.diff()
         if name == "read_file":
             path = args.get("path", "")
+            ref = args.get("ref") or None
             # 防目录穿越：只允许仓库内相对路径
             if not path or path.startswith("/") or ".." in path.split("/"):
                 return "非法的文件路径"
-            return self.tools.read_file(path)
+            return self.tools.read_file(path, ref)
         return f"未知工具：{name}"
 
     def run(self) -> str:
@@ -792,7 +841,7 @@ class ReviewAgent:
             },
             {
                 "role": "user",
-                "content": f"PR 标题：{meta['title']}\n改动文件：{json.dumps(meta['changed_files'], ensure_ascii=False)}",
+                "content": _context_message(meta),
             },
         ]
 
@@ -1005,9 +1054,11 @@ diff、文件读取与改动统计都换到 Gitee OpenAPI v5 的对应端点，�
 8. **并发风暴**：`concurrency` 用 `github.ref` 分组，同一分支上的任务会互相取消；
    若希望按 PR 分组，可在 Worker 侧把 PR 号写进分支名或改用 `repository_dispatch` +
    自定义 `concurrency.group`。
-9. **大 PR 上下文**：diff 与文件内容都有字符上限（见 `mini_agent.py` 顶部常量），
+9. **大 PR 上下文**：diff、文件内容、PR 描述都有字符上限（见 `mini_agent.py` 顶部常量），
    超限会被截断，宁可让模型少看也不要直接报错。
-10. **失败必回写**：Agent 任何异常都会转成一条「审查失败」评论，不会静默丢任务。
+10. **读文件必须带 ref**：`read_file` 默认按 PR 的 `head.sha` 读，保证读到改动后的版本；
+    一旦改成按默认分支读，PR 新增文件会 404、改动过的文件会给出基于旧代码的误判。
+11. **失败必回写**：Agent 任何异常都会转成一条「审查失败」评论，不会静默丢任务。
 
 ## 二次开发约定
 
