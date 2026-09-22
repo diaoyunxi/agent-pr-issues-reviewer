@@ -3,10 +3,12 @@ name = "agent-pr-reviewer"
 main = "worker/src/index.ts"
 compatibility_date = "2024-11-01"
 
-# 密钥用 `wrangler secret put` 写入，不要写在本文件里
-# GITHUB_PAT / GITHUB_WEBHOOK_SECRET / GITEE_WEBHOOK_SECRET
+# 密钥用 `wrangler secret put` 写入，不要写在本文件里：
+#   GITHUB_PAT / GITEE_PAT / GITHUB_WEBHOOK_SECRET / GITEE_WEBHOOK_SECRET
+#   GH_APP_ID / GH_APP_INSTALLATION_ID / GH_APP_PRIVATE_KEY / GITEE_APP_TOKEN（App 身份，可选）
+# Worker 写中转仓库时优先用 GitHub App 安装令牌，拿不到才回退 GITHUB_PAT。
 
 [vars]
 CONTROL_REPO = "your-org/ai-review-control"
 
-# 如需把其他环境变量（如 GITHUB_API）改成变量而非密钥，也写在这里
+# 如需把其他环境变量（如 GITHUB_API / GITEE_API）改成变量而非密钥，也写在这里

@@ -1,1 +1,3 @@
 requests==2.32.3
+# GitHub App 私钥签 JWT 需要 RS256 签名，cryptography 是唯一为此引入的依赖
+cryptography==43.0.3

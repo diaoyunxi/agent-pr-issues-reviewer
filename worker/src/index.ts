@@ -6,19 +6,15 @@
  *
  * 之所以要中转：审查方的 Actions 跑在公开中转仓库上（免费额度），
  * 而代码要从目标仓库拉取，所以这里只传递"审谁"的描述，不传递代码本身。
+ *
+ * 写中转仓库的身份优先用 App：GitHub 走 App 安装令牌，Gitee 走 App access_token，
+ * 两者都拿不到时回退个人令牌，见 app-auth.ts。
  */
 
-export interface Env {
-  /** 中转仓库，格式 owner/repo */
-  CONTROL_REPO: string
-  /** 有 repo 权限的 PAT，用于向中转仓库写文件 */
-  GITHUB_PAT: string
-  /** GitHub Webhook 的 HMAC 密钥，未配置则不校验（仅限本地调试） */
-  GITHUB_WEBHOOK_SECRET?: string
-  /** Gitee Webhook 密码，Gitee 用明文密码而非 HMAC */
-  GITEE_WEBHOOK_SECRET?: string
-  GITHUB_API?: string
-}
+import { resolveToken } from './app-auth'
+import type { AppEnv } from './env'
+
+export type Env = AppEnv
 
 interface ReviewTask {
   /** 平台标识，Agent 端据此选择 API 基址与鉴权方式 */
@@ -60,7 +56,8 @@ export default {
 
     // 不是 PR/Issue 相关事件，直接忽略，避免噪声触发
     if (!task) {
-      return new Response('Ignored', { status: 204 })
+      // 204 不允许带 body，状态码本身就是全部信息
+      return new Response(null, { status: 204 })
     }
 
     // 先返回 202，再让 Push 过程继续跑，避免 Webhook 发送方等超时
@@ -232,10 +229,16 @@ async function pushTaskToControlRepo(env: Env, task: ReviewTask): Promise<void> 
   const path = `tasks/${repoName}-${task.pr_number}-${Date.now()}.json`
   const url = `${api}/repos/${env.CONTROL_REPO}/contents/${path}`
 
+  // 中转仓库在 GitHub，只能用 GitHub 侧身份；Gitee 的 App 令牌换不来 GitHub 写权限
+  const { token, source } = await resolveToken(env, 'github')
+  if (source === 'pat') {
+    console.warn('[push-task] GitHub App 不可用，已回退 GITHUB_PAT')
+  }
+
   const res = await fetch(url, {
     method: 'PUT',
     headers: {
-      Authorization: `Bearer ${env.GITHUB_PAT}`,
+      Authorization: `Bearer ${token}`,
       Accept: 'application/vnd.github+json',
       'Content-Type': 'application/json',
       'User-Agent': 'agent-pr-reviewer-worker',

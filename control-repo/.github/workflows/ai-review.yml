@@ -51,11 +51,65 @@ jobs:
           echo "pr_number=$(jq -r '.pr_number' /tmp/task.json)" >> "$GITHUB_OUTPUT"
           echo "is_issue=$(jq -r '.is_issue' /tmp/task.json)" >> "$GITHUB_OUTPUT"
 
+      - name: Issue app installation token
+        id: auth
+        env:
+          PROVIDER: ${{ steps.task.outputs.provider }}
+          GH_APP_ID: ${{ secrets.GH_APP_ID }}
+          GH_APP_INSTALLATION_ID: ${{ secrets.GH_APP_INSTALLATION_ID }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          GITEE_APP_TOKEN: ${{ secrets.GITEE_APP_TOKEN }}
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # GitHub App 用私钥签 JWT 再换安装令牌；Gitee 应用只认授权下发的 access_token，
+          # 先探测有效性，任一环节失败都回退 PAT，不阻塞审查
+          if [ "$PROVIDER" = "gitee" ]; then
+            if [ -n "${GITEE_APP_TOKEN:-}" ] && \
+               curl -sf -H "User-Agent: ai-review-agent" \
+                 "https://gitee.com/api/v5/user?access_token=${GITEE_APP_TOKEN}" > /dev/null; then
+              APP_TOKEN="$GITEE_APP_TOKEN"
+            fi
+          elif [ -n "${GH_APP_ID:-}" ] && [ -n "${GH_APP_INSTALLATION_ID:-}" ] && [ -n "${GH_APP_PRIVATE_KEY:-}" ]; then
+            # 私钥或换发接口出问题都属于"App 不可用"，要能降级到 PAT，因此整段用 if 包住而不是直接失败
+            printf '%s' "$GH_APP_PRIVATE_KEY" > /tmp/app.pem
+            NOW=$(date +%s)
+            HEADER=$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+            PAYLOAD=$(printf '{"iat":%s,"exp":%s,"iss":"%s"}' "$((NOW-60))" "$((NOW+540))" "$GH_APP_ID" \
+              | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+            if SIGNATURE=$(printf '%s' "$HEADER.$PAYLOAD" | openssl dgst -sha256 -sign /tmp/app.pem 2>/dev/null \
+                 | openssl base64 -A | tr '+/' '-_' | tr -d '=') && [ -n "$SIGNATURE" ]; then
+              APP_TOKEN=$(curl -sf -X POST \
+                -H "Authorization: Bearer $HEADER.$PAYLOAD.$SIGNATURE" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                -H "User-Agent: ai-review-agent" \
+                "https://api.github.com/app/installations/$GH_APP_INSTALLATION_ID/access_tokens" \
+                | jq -r '.token // empty' || true)
+            else
+              echo "GitHub App 私钥无法用于签名，按 App 不可用处理"
+            fi
+            rm -f /tmp/app.pem
+          fi
+
+          if [ -n "${APP_TOKEN:-}" ]; then
+            echo "获取到 App 令牌，本次审查使用 App 身份"
+            echo "checkout_token=$APP_TOKEN" >> "$GITHUB_OUTPUT"
+            echo "fallback_token=$PAT_TOKEN" >> "$GITHUB_OUTPUT"
+          else
+            echo "未获取到 App 令牌，回退 PAT_TOKEN"
+            echo "checkout_token=$PAT_TOKEN" >> "$GITHUB_OUTPUT"
+            echo "fallback_token=$PAT_TOKEN" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout target repo
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.task.outputs.target_repo }}
-          token: ${{ secrets.PAT_TOKEN }}
+          # 拉代码优先用 App 身份：GitHub 目标仓库拿安装令牌，Gitee 目标仓库拿 Gitee 应用令牌，
+          # 都拿不到时回退 PAT_TOKEN（跨平台拉取也只能回退）
+          token: ${{ steps.auth.outputs.checkout_token }}
           path: target-repo
           fetch-depth: 0
 
@@ -74,8 +128,13 @@ jobs:
       - name: Run AI agent
         working-directory: target-repo
         env:
-          # Agent 内用 PAT 读写目标仓库的 PR 评论
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          # App 凭据优先，缺失或失效时 Agent 内部回退到 GITHUB_TOKEN
+          GH_APP_ID: ${{ secrets.GH_APP_ID }}
+          GH_APP_INSTALLATION_ID: ${{ secrets.GH_APP_INSTALLATION_ID }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          GITEE_APP_TOKEN: ${{ secrets.GITEE_APP_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.auth.outputs.fallback_token }}
+          GITEE_API: ${{ secrets.GITEE_API }}
           AI_API_BASE: ${{ secrets.AI_API_BASE }}
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           AI_MODEL: ${{ secrets.AI_MODEL }}
