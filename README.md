@@ -725,6 +725,39 @@ Gitee 场景：`provider=gitee` 时，把 `post_comment` 换成 Gitee 的 `POST 
 
 ---
 
+## Gitee 镜像仓库与个人令牌
+
+本仓库已在 Gitee 建好同名镜像仓库，用于接 Gitee Webhook 与回写 Gitee PR 评论：
+
+- 仓库地址：https://gitee.com/diaoyunxi/agent-pr-issues-reviewer
+- 推送方式（把本地分支推到 Gitee 的 `main`）：
+
+```bash
+git remote add gitee https://gitee.com/diaoyunxi/agent-pr-issues-reviewer.git
+git push -u gitee HEAD:main
+```
+
+- 令牌绝不写进仓库或脚本：用环境变量传入，例如
+
+```bash
+export GITEE_TOKEN=xxxxxx   # Gitee 私人令牌，勿提交、勿贴群
+curl -s "https://gitee.com/api/v5/user?access_token=$GITEE_TOKEN"
+```
+
+Gitee 侧需要配置的位置：
+
+1. **Webhook**：Gitee 仓库 → 管理 → Webhook，URL 填 Worker 域名，密码填 `GITEE_WEBHOOK_SECRET` 的值
+   （Gitee 回带的是明文密码，走 `X-Gitee-Token`，不是 HMAC）。
+2. **回写评论的令牌**：Agent 回写 Gitee 时用 `Authorization: token <GITEE_TOKEN>`，
+   令牌权限勾选 `projects`（读写仓库）与 `pull_requests`。
+3. **令牌泄露处置**：一旦令牌出现在聊天记录、Issue、日志里，视为已泄露，
+   立刻到 Gitee → 设置 → 私人令牌删除并重建，再更新对应的 Secret。
+
+> ⚠️ 令牌属于敏感凭证。本次任务中用户提供的令牌已用于建仓与推送，
+> 建议按上面的第 3 条**立即轮换**，并避免再次通过公开渠道传递。
+
+---
+
 ## Secrets 与环境变量清单
 
 ### Cloudflare Worker（`wrangler secret put`）
