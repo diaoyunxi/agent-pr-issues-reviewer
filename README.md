@@ -54,7 +54,7 @@ Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上�
 └── agent/                  # 模块三：AI Agent（脚本留在控制仓库，由 CI 直接调用）
     ├── requirements.txt    #   openai-agents + cryptography
     └── src/
-        ├── review.py       #   入口：读配置 → 克隆上游仓库到 /tmp → 跑 agent → 回写评论
+        ├── review.py       #   入口：读配置 → 完整克隆上游仓库到 /tmp → 跑 agent → 回写评论
         ├── config.py       #   agents/config.json + prompt.txt 的加载与校验
         ├── task_context.py #   任务 JSON / 环境变量 → 模型首条消息
         ├── agent_runner.py #   组装 OpenAI Agents SDK 的 Agent 并运行
@@ -703,11 +703,11 @@ jobs:
 agent/
 ├── requirements.txt          # openai-agents + cryptography
 └── src/
-    ├── review.py             # 入口：取配置 → 克隆上游仓库 → 跑 agent → 回写评论
+    ├── review.py             # 入口：取配置 → 完整克隆上游仓库 → 跑 agent → 回写评论
     ├── config.py             # 读 agents/config.json + prompt.txt，校验 tools / workdir
     ├── task_context.py       # 任务 JSON / 环境变量 → 给模型的首条消息
     ├── agent_runner.py       # 组装 Agent（chat/completions 兼容网关）并运行
-    ├── repo.py               # 克隆到 /tmp 子目录、URL 脱敏、环境变量清洗
+    ├── repo.py               # 完整克隆到 /tmp 子目录、检出 head、URL 脱敏、环境变量清洗
     ├── tools.py              # 唯一的工具：在仓库目录里执行 bash
     ├── app_auth.py           # App 身份优先、PAT 回退的 TokenProvider（沿用）
     └── agents/
@@ -721,6 +721,7 @@ agent/
 | 需求 | 落地方式 |
 | --- | --- |
 | 仓库克隆到 `/tmp` 子目录 | `repo.py::clone_repo()`，目录名 `repo-<随机>`，跑完随容器销毁 |
+| 完整克隆（不浅克隆） | `git clone --no-single-branch`：全量历史 + 所有分支的 remote ref，`git log`/`git blame`/跨提交 diff 都能用 |
 | 限制工作目录在仓库内 | `bash` 工具的 `cwd` 钉在仓库根 + `sanitize_env` 把 `HOME`/`PWD` 也指过去 |
 | 只给 bash 工具 | `tools.py` 只实现一个 `bash` function tool，`config.json` 里 `tools: ["bash"]` |
 | 系统提示词单独成 txt | `agents/prompt.txt`，模型读的是这个文件的内容 |
@@ -765,8 +766,13 @@ agent/
 
 ### 克隆与安全
 
-- 克隆命令是 `git clone --depth=1`（有 base/head sha 时改成 `git init` + 两次 `fetch --depth=1`，
-  只拉要审查的两个提交）；URL 里拼 `x-access-token:<token>@`（Gitee 用 `oauth2:`）。
+- 克隆是**完整克隆**：`git clone --no-single-branch <auth-url> <dir>`，不带 `--depth`，
+  拉全量历史与所有分支的 remote-tracking ref（`origin/<branch>`），
+  这样 agent 的 `git log` / `git blame` / `git diff <base>...<head>` 结果才可信；
+  代价是耗时与流量更大，`GIT_TIMEOUT` 放宽到 1200s。
+- 克隆完由 `checkout_head()` 把工作区切到待审查提交：优先按 `head_sha` 检出，
+  sha 在克隆结果里不可达时回退到 `head_ref` 分支，两者都没有则留在默认分支。
+- URL 里拼 `x-access-token:<token>@`（Gitee 用 `oauth2:`）。
 - 任何日志输出都过 `mask_url()`，报错信息也会把令牌替换成 `***`，不会泄到 Actions 日志里。
 - 令牌优先用 App 身份（GitHub 安装令牌 / Gitee 应用令牌），取不到再回退 `PAT_TOKEN`。
 - **CI 侧**：只传上游仓库 URL 与任务 JSON，**不再 checkout 代码**，也不需要待审查仓库里有别的文件。
@@ -774,7 +780,7 @@ agent/
 ### 运行流程
 
 1. `review.py` 读任务上下文（环境变量优先，其次 `/tmp/task.json`）；
-2. 换令牌 → 克隆上游仓库到 `/tmp/repo-xxxx`；
+2. 换令牌 → **完整克隆**上游仓库到 `/tmp/repo-xxxx`，再 `git checkout` 到待审查的 head；
 3. 读克隆出来的仓库里的 `agents/config.json` 与 `agents/prompt.txt`（路径可用 `AGENT_CONFIG` 调整）；
 4. 组装 agent（`bash` 工具 + 系统提示词 + 首条任务消息），跑 `Runner.run()`；
 5. 把最终正文作为评论回写目标仓库；任何环节失败都会回写「审查失败」评论，不会静默丢任务。
@@ -833,7 +839,7 @@ CI 侧注入，脚本侧只读（真正必填的只有三个上游/模型相关�
 `agent/src/review.py`（入口，完整代码）：
 
 ```python
-"""AI 审查入口：解析配置 → 克隆上游仓库到 /tmp → 在仓库内跑 bash agent → 回写评论。
+"""AI 审查入口：解析配置 → 完整克隆上游仓库到 /tmp → 在仓库内跑 bash agent → 回写评论。
 
 工作流（CI）只需要传两个东西：**上游仓库 URL**（UPSTREAM_REPO）与任务 JSON
 （PR/Issue 元数据）。代码由脚本自己 `git clone` 到 /tmp 的子目录，
@@ -933,20 +939,21 @@ def main() -> int:
             traceback.print_exc()
             return 1
 
-    # 1) 克隆上游仓库到 /tmp 的子目录
+    # 1) 完整克隆上游仓库到 /tmp 的子目录
     upstream = ctx["upstream_url"]
-    print(f"[review] 克隆上游仓库：{mask_url(upstream)} → {CLONE_ROOT}")
+    print(f"[review] 完整克隆上游仓库：{mask_url(upstream)} → {CLONE_ROOT}")
     try:
+        # 完整克隆（全量历史、全部分支），之后再把工作区切到待审查的 head
         repo_dir = clone_repo(
             url=upstream,
             token=token,
             provider=provider,
-            branch=ctx["head_ref"] if not (ctx["base_sha"] and ctx["head_sha"]) else "",
+            branch=ctx["head_ref"],
             base_sha=ctx["base_sha"],
             head_sha=ctx["head_sha"],
             workdir=CLONE_ROOT,
         )
-        checkout_head(repo_dir, ctx["head_sha"])
+        checkout_head(repo_dir, ctx["head_sha"], ctx["head_ref"])
     except RepoError as err:
         return fail(f"克隆上游仓库失败：`{err}`")
 

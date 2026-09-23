@@ -3,6 +3,10 @@
 克隆用**令牌拼接在 URL 里的方式**（`https://x-access-token:<token>@host/owner/repo.git`），
 因为带令牌的 remote 只临时存在于容器里，跑完 job 就没了；这样 CI 里不需要额外配
 git credential helper 或依赖 checkout action，上游仓库地址由 CI 直接传进来即可。
+
+克隆是**完整克隆**（全量历史 + 所有分支的 remote-tracking ref），不做 `--depth=1` 浅克隆：
+agent 需要 `git log`、`git blame`、`git diff <base>...<head>` 这类跨历史的命令，
+浅克隆下这些要么报错要么结果不可信。代价是耗时与流量更大，`GIT_TIMEOUT` 相应放宽。
 """
 
 import os
@@ -13,7 +17,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-GIT_TIMEOUT = 600
+GIT_TIMEOUT = 1200  # 完整克隆：大仓库可能跑几分钟，放宽超时
 
 
 class RepoError(RuntimeError):
@@ -78,10 +82,15 @@ def clone_repo(
     head_sha: str = "",
     workdir: str = "/tmp",
 ) -> Path:
-    """浅克隆目标仓库到 /tmp 的一个子目录，返回仓库根目录。
+    """**完整克隆**目标仓库到 /tmp 的一个子目录，返回仓库根目录。
 
-    有 base/head sha 时按 sha 逐个 fetch（`--depth=1`，不拉全量历史），
-    这样 workflow 不需要在 CI 里额外 checkout，agent 也能拿到要用的提交。
+    与浅克隆的区别：
+    - 不带 `--depth`，`git log`/`git blame`/`git diff base...head` 都能正常工作；
+    - 显式 `--no-single-branch`，拉取所有分支的 remote-tracking ref，
+      便于 agent 自己比较 base/head 之外的分支；
+    - 不指定 `--branch`，先克隆默认分支，再由 `checkout_head()` 切到待审查提交。
+
+    `base_sha` / `head_sha` / `branch` 只用于日志提示与后续检出，不再影响克隆方式。
     """
     if not url:
         raise RepoError("上游仓库地址为空，请通过 UPSTREAM_REPO/REPO_URL 传入")
@@ -94,18 +103,19 @@ def clone_repo(
     if token:
         redact[token] = "***"
 
+    wanted = head_sha or branch
+    print(
+        "[repo] 完整克隆上游仓库："
+        f"{mask_url(auth_url)} → {target}"
+        + (f"（目标提交 {wanted[:12]}）" if wanted else "")
+    )
+
     try:
-        if base_sha and head_sha:
-            # 审查只需要两个提交及其差异，浅克隆足够，也快得多
-            _run_git(["init", "-q", str(target)], redact=redact)
-            _run_git(["remote", "add", "origin", auth_url], cwd=target, redact=redact)
-            for sha, ref in ((head_sha, "head"), (base_sha, "base")):
-                _run_git(["fetch", "-q", "--depth=1", "origin", sha], cwd=target, redact=redact)
-                _run_git(["update-ref", f"refs/remotes/origin/{ref}", "FETCH_HEAD"], cwd=target, redact=redact)
-        elif branch:
-            _run_git(["clone", "-q", "--depth=1", "--branch", branch, auth_url, str(target)], redact=redact)
-        else:
-            _run_git(["clone", "-q", "--depth=1", auth_url, str(target)], redact=redact)
+        # 完整克隆：全量历史 + 全部分支。不指定 --branch，避免把克隆限制在单一分支。
+        _run_git(
+            ["clone", "--no-single-branch", auth_url, str(target)],
+            redact=redact,
+        )
     except RepoError:
         shutil.rmtree(target, ignore_errors=True)
         raise
@@ -115,11 +125,23 @@ def clone_repo(
     return target
 
 
-def checkout_head(repo_dir: Path, sha: str) -> None:
-    """把工作区切到指定提交（审查的对象是 head，不是默认分支）。"""
-    if not sha:
-        return
-    _run_git(["checkout", "-q", sha], cwd=repo_dir)
+def checkout_head(repo_dir: Path, sha: str = "", branch: str = "") -> None:
+    """把工作区切到待审查的提交（审查对象是 head，不是默认分支）。
+
+    优先按 sha 检出；没有 sha 或该 sha 在克隆结果里不可达时，回退到分支名
+    （远端分支已被完整克隆拉到 `origin/<branch>`，直接检出同名本地分支）。
+    两者都没有就安静地留在默认分支，不做隐式兜底式的失败。
+    """
+    if sha:
+        try:
+            _run_git(["checkout", "-q", sha], cwd=repo_dir)
+            return
+        except RepoError as err:
+            if not branch:
+                raise
+            print(f"[repo] 按提交 {sha[:12]} 检出失败（{err}），回退到分支 {branch}")
+    if branch:
+        _run_git(["checkout", "-q", branch], cwd=repo_dir)
 
 
 def sanitize_env(env: dict | None = None, workspace: Path | None = None) -> dict:

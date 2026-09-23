@@ -1,4 +1,4 @@
-"""AI 审查入口：解析配置 → 克隆上游仓库到 /tmp → 在仓库内跑 bash agent → 回写评论。
+"""AI 审查入口：解析配置 → 完整克隆上游仓库到 /tmp → 在仓库内跑 bash agent → 回写评论。
 
 工作流（CI）只需要传两个东西：**上游仓库 URL**（UPSTREAM_REPO）与任务 JSON
 （PR/Issue 元数据）。代码由脚本自己 `git clone` 到 /tmp 的子目录，
@@ -98,20 +98,21 @@ def main() -> int:
             traceback.print_exc()
             return 1
 
-    # 1) 克隆上游仓库到 /tmp 的子目录
+    # 1) 完整克隆上游仓库到 /tmp 的子目录
     upstream = ctx["upstream_url"]
-    print(f"[review] 克隆上游仓库：{mask_url(upstream)} → {CLONE_ROOT}")
+    print(f"[review] 完整克隆上游仓库：{mask_url(upstream)} → {CLONE_ROOT}")
     try:
+        # 完整克隆（全量历史、全部分支），之后再把工作区切到待审查的 head
         repo_dir = clone_repo(
             url=upstream,
             token=token,
             provider=provider,
-            branch=ctx["head_ref"] if not (ctx["base_sha"] and ctx["head_sha"]) else "",
+            branch=ctx["head_ref"],
             base_sha=ctx["base_sha"],
             head_sha=ctx["head_sha"],
             workdir=CLONE_ROOT,
         )
-        checkout_head(repo_dir, ctx["head_sha"])
+        checkout_head(repo_dir, ctx["head_sha"], ctx["head_ref"])
     except RepoError as err:
         return fail(f"克隆上游仓库失败：`{err}`")
 
