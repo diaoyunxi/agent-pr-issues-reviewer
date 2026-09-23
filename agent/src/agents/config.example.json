@@ -7,6 +7,11 @@
     "max_turns": 20,
     "workdir": ".",
     "tools": ["bash"],
+    "write": {
+      "enabled": false,
+      "require_approval": true,
+      "tools": ["apply_patch", "git_commit", "git_push"]
+    },
     "bash": {
       "timeout_seconds": 120,
       "max_output_chars": 30000

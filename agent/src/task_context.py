@@ -66,8 +66,12 @@ def build_context() -> dict:
     }
 
 
-def build_prompt(ctx: dict) -> str:
-    """拼首条 user 消息：任务描述 + 明确的"先看 diff"指引。"""
+def build_prompt(ctx: dict, write_mode: str = "") -> str:
+    """拼首条 user 消息：任务描述 + 明确的"先看 diff"指引。
+
+    `write_mode` 由调用方按配置传入（`proposal` = 改动推到新分支 / `direct` = 直接改源分支），
+    让模型知道自己手上有没有写权限、能推到哪，不要瞎试 `git push`。
+    """
     kind = "Issue" if ctx["is_issue"] else "Pull Request"
     body = (ctx["body"] or "").strip()
     if len(body) > MAX_BODY_CHARS:
@@ -97,6 +101,7 @@ def build_prompt(ctx: dict) -> str:
 
     if ctx["is_issue"]:
         lines.append("这是一条 Issue：没有 diff 可看，请判断描述是否清晰、是否缺信息，需要时给出实现建议。")
+        lines.append("需要改代码时，请把建议改成可直接落地的补丁/命令，而不是「建议你改一下」这种模糊描述。")
     elif ctx["base_sha"] and ctx["head_sha"]:
         lines.append(
             f"本次改动：`git diff {ctx['base_sha'][:12]} {ctx['head_sha'][:12]}`"
@@ -104,5 +109,19 @@ def build_prompt(ctx: dict) -> str:
         )
     else:
         lines.append("请先用 `git log --oneline -10` 与 `git diff HEAD~1 HEAD` 找到本次改动。")
+
+    if write_mode == "direct":
+        lines += [
+            "",
+            "你有写权限：确认有必须改的问题后，可以直接改代码——用 `apply_patch` 打补丁、",
+            "`git_commit` 提交、`git_push` 推送（**会直接落到本条 PR 的源分支**，请保持最小改动）。",
+            "改完在答复里说明改了什么、为什么这么改。",
+        ]
+    elif write_mode == "proposal":
+        lines += [
+            "",
+            "你有写权限，但**不许直接改 PR 源分支**：改动请推到工具指定的新分支（`git_push` 会自己处理），",
+            "并在答复里写清新分支名与改动说明，由人来开 PR 合并。",
+        ]
 
     return "\n".join(lines)

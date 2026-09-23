@@ -26,6 +26,7 @@ from app_auth import (
     github_comment_url,
 )
 from config import ConfigError, load_agent_config
+from git_write import WriteContext
 from repo import RepoError, clone_repo, checkout_head, mask_url, sanitize_env
 from task_context import build_context, build_prompt
 from tools import ShellContext
@@ -65,6 +66,30 @@ def _report(provider: str, repo: str, number: int, token: str, body: str, is_iss
         traceback.print_exc()
         return 1
     return 0
+
+
+def build_writer(cfg, ctx: dict, repo_dir: Path, token: str, provider: str) -> WriteContext:
+    """按配置组装写权限上下文。
+
+    - `require_approval=True`（默认）：推到一个新分支 `ai-review/<源分支>`，
+      由评审人开 PR 合并——CI 里的自动提交不应该直接落到别人的 PR 分支上；
+    - `require_approval=False`：直接推回 PR 源分支 `head_ref`，即「AI 直接改代码」。
+    """
+    head_ref = ctx["head_ref"] or ""
+    if cfg.require_approval:
+        # 分支名里不含时间戳，同一 PR 多次运行会更新同一个分支，不会堆一堆分支
+        push_branch = f"ai-review/{head_ref}" if head_ref else "ai-review/agent-fix"
+    else:
+        push_branch = head_ref
+
+    return WriteContext(
+        workdir=str(repo_dir),
+        token=token,
+        provider=provider,
+        remote_url=ctx["upstream_url"],
+        push_branch=push_branch,
+        is_proposal=cfg.require_approval,
+    )
 
 
 def main() -> int:
@@ -135,8 +160,17 @@ def main() -> int:
         env=sanitize_env({}, workspace),
     )
 
+    # 4) 写权限：allow_write 才组装写工具；require_approval=True 时只推到一个新分支，
+    #    由人开 PR 合并，不直接动 PR 源分支
+    writer = None
+    write_mode = ""
+    if cfg.allow_write:
+        writer = build_writer(cfg, ctx, repo_dir, token, provider)
+        write_mode = "proposal" if writer.is_proposal else "direct"
+        print(f"[review] 写权限已开启：模式={write_mode} 目标分支={writer.push_branch}")
+
     try:
-        result = run_agent(cfg, shell, build_prompt(ctx), workspace)
+        result = run_agent(cfg, shell, build_prompt(ctx, write_mode), workspace, writer)
         body = f"{COMMENT_MARKER}\n## 🤖 AI 代码审查\n\n{result}"
     except (AgentRunError, Exception) as err:  # noqa: BLE001 - 任何异常都要回报到 PR
         traceback.print_exc()

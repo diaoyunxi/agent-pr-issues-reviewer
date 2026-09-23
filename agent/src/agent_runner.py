@@ -9,6 +9,7 @@ from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
 from openai import AsyncOpenAI
 
 from config import AgentConfig
+from git_write import WriteContext, build_write_tools
 from tools import ShellContext, build_tools
 
 
@@ -24,23 +25,33 @@ def build_model(cfg: AgentConfig):
     return OpenAIChatCompletionsModel(model=cfg.model or os.environ.get("AI_MODEL", "gpt-4o-mini"), openai_client=client)
 
 
-def build_agent(cfg: AgentConfig, shell: ShellContext) -> Agent:
+def build_agent(cfg: AgentConfig, shell: ShellContext, writer: WriteContext | None = None) -> Agent:
+    """组装 agent：永远有 bash；给了 writer 才额外带上写权限工具。"""
+    tools = list(build_tools(shell))
+    if writer is not None:
+        tools += build_write_tools(writer)
     return Agent(
         name=cfg.name,
         instructions=cfg.instructions,
-        tools=build_tools(shell),
+        tools=tools,
         model=build_model(cfg),
         model_settings=ModelSettings(temperature=cfg.temperature),
     )
 
 
-def run_agent(cfg: AgentConfig, shell: ShellContext, prompt: str, workdir: Path) -> str:
-    """跑一轮完整对话，返回模型的最终评审正文。"""
-    agent = build_agent(cfg, shell)
-    # 工具用相对路径敲命令，所以进程级也切到仓库目录，避免两边目录不一致
+def run_agent(cfg: AgentConfig, shell: ShellContext, prompt: str, workdir: Path, writer: WriteContext | None = None) -> str:
+    """跑一轮完整对话，返回模型的最终评审正文。
+
+    进程级也切到仓库目录：bash 工具与写权限工具都用相对路径敲命令，
+    不切的话 `git apply` 会落到 CI 的工作目录上。
+    """
+    agent = build_agent(cfg, shell, writer)
     os.chdir(workdir)
     try:
-        result = asyncio.run(Runner.run(agent, prompt, max_turns=cfg.max_turns, context=shell))
+        # 所有工具共享同一个 context：一个 ctx 里是 shell 设置，另一个带写权限。
+        # SDK 只支持单 context，因此这里把 writer 放进 dict 让各工具自己取。
+        context = {"shell": shell, "writer": writer}
+        result = asyncio.run(Runner.run(agent, prompt, max_turns=cfg.max_turns, context=context))
     except Exception as err:  # noqa: BLE001 - 统一转成可读错误，外层会回写评论
         raise AgentRunError(f"{type(err).__name__}: {err}") from err
 

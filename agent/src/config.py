@@ -14,9 +14,11 @@ DEFAULT_CONFIG_PATH = "agents/config.json"
 DEFAULT_EXAMPLE_PATH = "agents/config.example.json"
 DEFAULT_PROMPT_PATH = "agents/prompt.txt"
 DEFAULT_TOOL = "bash"
+DEFAULT_WRITE_TOOLS = ["apply_patch", "git_commit", "git_push"]
 
 # 未知 tool 名要在启动时直接报错，避免"配了但没生效"这种静默失败
 KNOWN_TOOLS = {"bash"}
+KNOWN_WRITE_TOOLS = set(DEFAULT_WRITE_TOOLS)
 
 
 class ConfigError(RuntimeError):
@@ -35,6 +37,11 @@ class AgentConfig:
     max_turns: int = 20
     workdir: str = "."
     tools: list[str] = field(default_factory=lambda: [DEFAULT_TOOL])
+    # allow_write=True：允许 agent 改代码（提交并推回 PR 源分支）；
+    # require_approval=True：只做修改建议，不直接推，把补丁交给评审人
+    allow_write: bool = False
+    require_approval: bool = True
+    write_tools: list[str] = field(default_factory=lambda: list(DEFAULT_WRITE_TOOLS))
     bash_timeout: float = 120.0
     bash_max_output_chars: int = 30_000
     # 运行时注入（不进配置文件，避免把密钥写进仓库）
@@ -111,6 +118,10 @@ def load_agent_config(repo_root: Path, config_path: str = "", agent_name: str = 
     prompt_path = _resolve_prompt(prompt_file, path.parent, repo_root)
     instructions = prompt_path.read_text(encoding="utf-8")
 
+    write = entry.get("write")
+    if write is not None and not isinstance(write, dict):
+        raise ConfigError("write 配置必须是 JSON 对象，例如 {\"enabled\": true, \"require_approval\": true}")
+
     tools = entry.get("tools") or [DEFAULT_TOOL]
     if isinstance(tools, str):
         tools = [tools]
@@ -119,6 +130,17 @@ def load_agent_config(repo_root: Path, config_path: str = "", agent_name: str = 
     unknown = [t for t in tools if t not in KNOWN_TOOLS]
     if unknown:
         raise ConfigError(f"不支持的 tool：{', '.join(map(str, unknown))}（可用：{', '.join(sorted(KNOWN_TOOLS))}）")
+
+    # 写权限来自独立的 write 段，而不是和只读工具混在 tools 里：
+    # 「能不能改代码」这种危险开关要一眼看得见
+    write_tools = (write or {}).get("tools") or list(DEFAULT_WRITE_TOOLS)
+    if isinstance(write_tools, str):
+        write_tools = [write_tools]
+    unknown_write = [t for t in write_tools if t not in KNOWN_WRITE_TOOLS]
+    if unknown_write:
+        raise ConfigError(
+            f"不支持的 write.tools：{', '.join(map(str, unknown_write))}（可用：{', '.join(sorted(KNOWN_WRITE_TOOLS))}）"
+        )
 
     bash_cfg = entry.get("bash") or {}
     if not isinstance(bash_cfg, dict):
@@ -133,6 +155,9 @@ def load_agent_config(repo_root: Path, config_path: str = "", agent_name: str = 
         max_turns=int(entry.get("max_turns", 20)),
         workdir=str(entry.get("workdir") or "."),
         tools=[str(t) for t in tools],
+        allow_write=bool((write or {}).get("enabled", False)),
+        require_approval=bool((write or {}).get("require_approval", True)),
+        write_tools=[str(t) for t in write_tools],
         bash_timeout=float(bash_cfg.get("timeout_seconds", 120)),
         bash_max_output_chars=int(bash_cfg.get("max_output_chars", 30_000)),
     )

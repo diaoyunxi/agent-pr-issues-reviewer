@@ -708,7 +708,8 @@ agent/
     ├── task_context.py       # 任务 JSON / 环境变量 → 给模型的首条消息
     ├── agent_runner.py       # 组装 Agent（chat/completions 兼容网关）并运行
     ├── repo.py               # 完整克隆到 /tmp 子目录、检出 head、URL 脱敏、环境变量清洗
-    ├── tools.py              # 唯一的工具：在仓库目录里执行 bash
+    ├── tools.py              # 只读工具：在仓库目录里执行 bash
+    ├── git_write.py          # 可选的写权限工具：apply_patch / git_commit / git_push
     ├── app_auth.py           # App 身份优先、PAT 回退的 TokenProvider（沿用）
     └── agents/
         ├── config.json       # agent 配置（运行时读；仓库里放 config.example.json）
@@ -727,6 +728,7 @@ agent/
 | 系统提示词单独成 txt | `agents/prompt.txt`，模型读的是这个文件的内容 |
 | 其他 agent 设置成 json | `agents/config.json`，改完直接生效，不生成任何脚本 |
 | CI 需要上游仓库 URL | workflow 传 `UPSTREAM_REPO`（仓库变量/手动输入/任务 JSON 三级兜底），`review.py` 自己 clone |
+| 除了审查，让 AI 直接改代码 | `git_write.py` 的 `apply_patch` / `git_commit` / `git_push`，由 `write` 段开关控制；默认只出建议 |
 
 ### agent 配置（`agents/config.json`）
 
@@ -740,6 +742,11 @@ agent/
     "max_turns": 20,
     "workdir": ".",
     "tools": ["bash"],
+    "write": {
+      "enabled": false,
+      "require_approval": true,
+      "tools": ["apply_patch", "git_commit", "git_push"]
+    },
     "bash": {
       "timeout_seconds": 120,
       "max_output_chars": 30000
@@ -754,6 +761,11 @@ agent/
 - `tools` 目前只认 `bash`；写未知工具名会在启动时报错，不会静默忽略。
 - 顶层也可以直接写扁平结构（只有 `prompt_file`/`tools`/`model` 等字段）当单 agent 用。
 - 路径可用 `AGENT_CONFIG` 覆盖（默认 `agents/config.json`）。
+- `write` 段控制「AI 能不能直接改代码」，**默认 `enabled: false`**（只评审）：
+  - `enabled`：`true` 时才把 `apply_patch` / `git_commit` / `git_push` 三个写工具给模型；
+  - `require_approval`：`true`（默认）时推到一个新分支 `ai-review/<源分支>`，由人开 PR 合并；
+    `false` 时**直接推回 PR 源分支**，即「AI 直接改代码」，请确认目标仓库允许这样改；
+  - `tools`：写工具白名单，写未知名字在启动时报错。
 
 ### 唯一的工具：bash
 
@@ -777,13 +789,33 @@ agent/
 - 令牌优先用 App 身份（GitHub 安装令牌 / Gitee 应用令牌），取不到再回退 `PAT_TOKEN`。
 - **CI 侧**：只传上游仓库 URL 与任务 JSON，**不再 checkout 代码**，也不需要待审查仓库里有别的文件。
 
+### 可选的写权限：让 AI 直接改代码
+
+默认是「只评审」。要让它顺手把必须改的地方改掉，把 `write.enabled` 打开（见上一节）。
+
+实现落在 `git_write.py`：**「能改什么」不由模型自己决定**，而是三个受控工具。
+
+| 工具 | 作用 | 边界 |
+| --- | --- | --- |
+| `apply_patch` | 按 unified diff 打补丁（`git apply`），只改文件 | 补丁上限 20 万字符；打不上直接失败，报错回给模型重新生成 |
+| `git_commit` | `git add -A` + `git commit` | 提交信息不能为空；工作区没改动时拒绝提交（不造空提交） |
+| `git_push` | 推回任务指定的分支，**只允许 fast-forward** | 分支由外部固定：`main`/`master` 与空分支一律拒绝；不带 `--force` |
+
+- 推送目标只有两种：`require_approval: true` → `ai-review/<源分支>`（新分支，人开 PR 合并）；
+  `require_approval: false` → PR 的 `head_ref`（**直接改源分支**）。
+- 推送凭据仍然只在内存里：令牌拼进 `--push-url`，日志与报错统一过 `mask_url()`；模型 `env` 不到令牌。
+- 为什么会失败也被明说：非快进、分支保护被拒时，工具的返回里会附一句「不要强推，请改用新分支」。
+- 只有 `bash` 时（没开写权限），提示词里明确禁止 `git commit` / `git push` / 改文件，
+  要求把补丁写进评论正文。
+
 ### 运行流程
 
 1. `review.py` 读任务上下文（环境变量优先，其次 `/tmp/task.json`）；
 2. 换令牌 → **完整克隆**上游仓库到 `/tmp/repo-xxxx`，再 `git checkout` 到待审查的 head；
 3. 读克隆出来的仓库里的 `agents/config.json` 与 `agents/prompt.txt`（路径可用 `AGENT_CONFIG` 调整）；
-4. 组装 agent（`bash` 工具 + 系统提示词 + 首条任务消息），跑 `Runner.run()`；
-5. 把最终正文作为评论回写目标仓库；任何环节失败都会回写「审查失败」评论，不会静默丢任务。
+4. 按配置组装工具：永远有 `bash`；`write.enabled` 为真时追加三个写工具并打印模式与目标分支；
+5. 组装 agent（工具 + 系统提示词 + 首条任务消息），跑 `Runner.run()`；
+6. 把最终正文作为评论回写目标仓库；任何环节失败都会回写「审查失败」评论，不会静默丢任务。
 
 ### 环境变量
 
@@ -867,6 +899,7 @@ from app_auth import (
     github_comment_url,
 )
 from config import ConfigError, load_agent_config
+from git_write import WriteContext
 from repo import RepoError, clone_repo, checkout_head, mask_url, sanitize_env
 from task_context import build_context, build_prompt
 from tools import ShellContext
@@ -906,6 +939,30 @@ def _report(provider: str, repo: str, number: int, token: str, body: str, is_iss
         traceback.print_exc()
         return 1
     return 0
+
+
+def build_writer(cfg, ctx: dict, repo_dir: Path, token: str, provider: str) -> WriteContext:
+    """按配置组装写权限上下文。
+
+    - `require_approval=True`（默认）：推到一个新分支 `ai-review/<源分支>`，
+      由评审人开 PR 合并——CI 里的自动提交不应该直接落到别人的 PR 分支上；
+    - `require_approval=False`：直接推回 PR 源分支 `head_ref`，即「AI 直接改代码」。
+    """
+    head_ref = ctx["head_ref"] or ""
+    if cfg.require_approval:
+        # 分支名里不含时间戳，同一 PR 多次运行会更新同一个分支，不会堆一堆分支
+        push_branch = f"ai-review/{head_ref}" if head_ref else "ai-review/agent-fix"
+    else:
+        push_branch = head_ref
+
+    return WriteContext(
+        workdir=str(repo_dir),
+        token=token,
+        provider=provider,
+        remote_url=ctx["upstream_url"],
+        push_branch=push_branch,
+        is_proposal=cfg.require_approval,
+    )
 
 
 def main() -> int:
@@ -976,8 +1033,17 @@ def main() -> int:
         env=sanitize_env({}, workspace),
     )
 
+    # 4) 写权限：allow_write 才组装写工具；require_approval=True 时只推到一个新分支，
+    #    由人开 PR 合并，不直接动 PR 源分支
+    writer = None
+    write_mode = ""
+    if cfg.allow_write:
+        writer = build_writer(cfg, ctx, repo_dir, token, provider)
+        write_mode = "proposal" if writer.is_proposal else "direct"
+        print(f"[review] 写权限已开启：模式={write_mode} 目标分支={writer.push_branch}")
+
     try:
-        result = run_agent(cfg, shell, build_prompt(ctx), workspace)
+        result = run_agent(cfg, shell, build_prompt(ctx, write_mode), workspace, writer)
         body = f"{COMMENT_MARKER}\n## 🤖 AI 代码审查\n\n{result}"
     except (AgentRunError, Exception) as err:  # noqa: BLE001 - 任何异常都要回报到 PR
         traceback.print_exc()
@@ -1002,16 +1068,19 @@ if __name__ == "__main__":
 `agent/src/tools.py`（唯一的 bash 工具）：
 
 ```python
-"""agent 唯一的工具：在克隆下来的仓库目录里跑 bash。
+"""agent 的工具：在克隆下来的仓库目录里跑 bash，可选带上受控的写操作。
 
-只给一个工具是有意为之——模型拿到 shell，读代码、搜调用方、看 git 历史都靠它，
+只给一个 bash 工具的取舍见 README：模型拿到 shell，读代码、搜调用方、看 git 历史都靠它，
 不用再为「看目录」「读文件」「搜关键字」各写一个 API 工具。
+需要「直接改代码」时，bash 不够——模型没法自己拿到脱敏凭据去 push，
+所以写操作由 git_write.py 提供的受控工具承担，见那里的说明。
+
 安全边界由三件事兜住：工作目录锁在仓库内、环境变量里剔掉凭据、
 单条命令有超时与输出上限。
 """
 
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from agents import RunContextWrapper, function_tool
 
@@ -1027,6 +1096,8 @@ class ShellContext:
     timeout: float = DEFAULT_TIMEOUT
     max_output_chars: int = MAX_OUTPUT_CHARS
     env: dict | None = None
+    # 交给读代码工具用的额外上下文（当前为空，结构留在此处方便扩展）
+    extras: dict = field(default_factory=dict)
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -1074,6 +1145,7 @@ def build_bash_tool(ctx: ShellContext):
         """在工作目录（已克隆的待审查仓库）里执行一条 bash 命令。
 
         用于读代码、看 git diff/log、搜索调用方等。支持管道、重定向与 `&&` 串联。
+        直接执行 `git commit` / `git push` 可能失败：需要提交或推送时请用专用工具。
         Args:
             command: 要执行的 bash 命令，例如 "git diff --stat" 或 "rg -n 'def foo' src"。
         """
@@ -1083,7 +1155,7 @@ def build_bash_tool(ctx: ShellContext):
 
 
 def build_tools(ctx: ShellContext) -> list:
-    """按配置组装工具列表；当前只有 bash，扩展点也在这里。"""
+    """按配置组装只读工具；写权限工具在 git_write.build_write_tools()。"""
     return [build_bash_tool(ctx)]
 ```
 
@@ -1106,9 +1178,11 @@ DEFAULT_CONFIG_PATH = "agents/config.json"
 DEFAULT_EXAMPLE_PATH = "agents/config.example.json"
 DEFAULT_PROMPT_PATH = "agents/prompt.txt"
 DEFAULT_TOOL = "bash"
+DEFAULT_WRITE_TOOLS = ["apply_patch", "git_commit", "git_push"]
 
 # 未知 tool 名要在启动时直接报错，避免"配了但没生效"这种静默失败
 KNOWN_TOOLS = {"bash"}
+KNOWN_WRITE_TOOLS = set(DEFAULT_WRITE_TOOLS)
 
 
 class ConfigError(RuntimeError):
@@ -1127,6 +1201,11 @@ class AgentConfig:
     max_turns: int = 20
     workdir: str = "."
     tools: list[str] = field(default_factory=lambda: [DEFAULT_TOOL])
+    # allow_write=True：允许 agent 改代码（提交并推回 PR 源分支）；
+    # require_approval=True：只做修改建议，不直接推，把补丁交给评审人
+    allow_write: bool = False
+    require_approval: bool = True
+    write_tools: list[str] = field(default_factory=lambda: list(DEFAULT_WRITE_TOOLS))
     bash_timeout: float = 120.0
     bash_max_output_chars: int = 30_000
     # 运行时注入（不进配置文件，避免把密钥写进仓库）
@@ -1203,6 +1282,10 @@ def load_agent_config(repo_root: Path, config_path: str = "", agent_name: str = 
     prompt_path = _resolve_prompt(prompt_file, path.parent, repo_root)
     instructions = prompt_path.read_text(encoding="utf-8")
 
+    write = entry.get("write")
+    if write is not None and not isinstance(write, dict):
+        raise ConfigError("write 配置必须是 JSON 对象，例如 {\"enabled\": true, \"require_approval\": true}")
+
     tools = entry.get("tools") or [DEFAULT_TOOL]
     if isinstance(tools, str):
         tools = [tools]
@@ -1211,6 +1294,17 @@ def load_agent_config(repo_root: Path, config_path: str = "", agent_name: str = 
     unknown = [t for t in tools if t not in KNOWN_TOOLS]
     if unknown:
         raise ConfigError(f"不支持的 tool：{', '.join(map(str, unknown))}（可用：{', '.join(sorted(KNOWN_TOOLS))}）")
+
+    # 写权限来自独立的 write 段，而不是和只读工具混在 tools 里：
+    # 「能不能改代码」这种危险开关要一眼看得见
+    write_tools = (write or {}).get("tools") or list(DEFAULT_WRITE_TOOLS)
+    if isinstance(write_tools, str):
+        write_tools = [write_tools]
+    unknown_write = [t for t in write_tools if t not in KNOWN_WRITE_TOOLS]
+    if unknown_write:
+        raise ConfigError(
+            f"不支持的 write.tools：{', '.join(map(str, unknown_write))}（可用：{', '.join(sorted(KNOWN_WRITE_TOOLS))}）"
+        )
 
     bash_cfg = entry.get("bash") or {}
     if not isinstance(bash_cfg, dict):
@@ -1225,6 +1319,9 @@ def load_agent_config(repo_root: Path, config_path: str = "", agent_name: str = 
         max_turns=int(entry.get("max_turns", 20)),
         workdir=str(entry.get("workdir") or "."),
         tools=[str(t) for t in tools],
+        allow_write=bool((write or {}).get("enabled", False)),
+        require_approval=bool((write or {}).get("require_approval", True)),
+        write_tools=[str(t) for t in write_tools],
         bash_timeout=float(bash_cfg.get("timeout_seconds", 120)),
         bash_max_output_chars=int(bash_cfg.get("max_output_chars", 30_000)),
     )
@@ -1264,10 +1361,15 @@ def load_agent_config(repo_root: Path, config_path: str = "", agent_name: str = 
 13. **配置写错要吵**：未知 tool 名、找不到 `config.json` / `prompt.txt`、JSON 语法错误都会直接失败并回写评论，
     不会静默降级——否则「配了没生效」比跑挂更难查。
 14. **失败必回写**：克隆失败、配置错误、模型异常都会转成一条「审查失败」评论，不会静默丢任务。
+15. **写权限默认关闭**：`write.enabled` 不配就是只评审。打开前先想清楚推哪个分支：
+    `require_approval: true` 只推 `ai-review/<源分支>`（人开 PR），`false` 会**直接改 PR 源分支**，
+    对开放贡献者的仓库慎用——AI 的提交会以 App/PAT 身份出现，无法区分「作者自己改的」。
+16. **写工具不碰主干**：`git_push` 拒绝 `main`/`master` 与空分支，且不带 `--force`，
+    非快进会被远端拒绝；分支保护规则仍然有效，被拒时会把原因回给模型让它改走新分支。
 
 ## 二次开发约定
 
-改动 `worker/src/index.ts`、`agent/src` 或 `control-repo/.github/workflows/ai-review.yml` 时，README 里内嵌的
+改动 `worker/src/index.ts`、`agent/src`、`agent/src/agents/prompt.txt` 或 `control-repo/.github/workflows/ai-review.yml` 时，README 里内嵌的
 对应代码块必须同步更新——文档与代码不一致会直接误导部署者。
 （`worker/src/app-auth.ts` 与 `worker/src/env.ts` 没有内嵌代码块，改动它们只需同步本节与 Secrets 表。）可以用一段脚本自查：
 
@@ -1298,7 +1400,8 @@ npm install && npx tsc --noEmit
 # Agent 依赖与语法（openai-agents 提供工具调用循环，cryptography 用于 App 私钥签 JWT）
 pip install -r agent/requirements.txt && python -m py_compile agent/src/*.py
 
-# Agent 单元测试（不联网、不调模型：配置加载 / URL 脱敏 / 环境清洗 / bash 工具 / 跳过克隆）
+# Agent 单元测试（不联网、不调模型：配置加载 / URL 脱敏 / 环境清洗 / bash 工具 /
+# 写权限工具 apply_patch、git_commit、git_push / 跳过克隆）
 python agent/tests/test_units.py
 
 # workflow 语法

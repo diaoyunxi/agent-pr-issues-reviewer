@@ -12,6 +12,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
 from config import ConfigError, load_agent_config  # noqa: E402
+from git_write import (  # noqa: E402
+    WriteContext,
+    WriteError,
+    apply_patch,
+    build_write_tools,
+    git_commit,
+    git_push,
+)
 from repo import (  # noqa: E402
     RepoError,
     _authenticated_url,
@@ -284,6 +292,174 @@ def _():
     assert '已截断' in prompt
     assert len(prompt) < 6_000
     assert 'git diff' in prompt
+
+
+def _init_repo(path: Path) -> None:
+    """造一个带一次提交的本地仓库，用于写权限测试。"""
+    import subprocess
+
+    subprocess.run(['git', 'init', '-q', str(path)], check=True)
+    # runner 上可能开了全局 gpgsign，本地关掉，避免提交因签名失败
+    subprocess.run(['git', '-C', str(path), 'config', 'commit.gpgsign', 'false'], check=True)
+    for key, value in (('user.email', 'a@b.c'), ('user.name', 'a'), ('commit.gpgsign', 'false')):
+        subprocess.run(['git', '-C', str(path), 'config', key, value], check=True)
+    (path / 'a.txt').write_text('v1\n', encoding='utf-8')
+    subprocess.run(['git', '-C', str(path), 'add', '-A'], check=True)
+    subprocess.run(['git', '-C', str(path), 'commit', '-qm', 'init'], check=True)
+
+
+@case('apply_patch + git_commit 改文件并提交')
+def _():
+    import subprocess
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / 'r'
+        repo.mkdir()
+        _init_repo(repo)
+        ctx = WriteContext(workdir=str(repo), push_branch='feat', remote_url=str(repo))
+
+        result = apply_patch(ctx, '--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-v1\n+v2\n')
+        assert '已应用' in result
+        assert (repo / 'a.txt').read_text() == 'v2\n'
+
+        # 未提交时工作区是脏的，推送要被拒绝
+        try:
+            git_push(ctx)
+            raise AssertionError('未提交就推送应该失败')
+        except WriteError as err:
+            assert '还没有产生提交' in str(err), err
+
+        assert '已提交' in git_commit(ctx, 'fix: 修正 a.txt')
+        assert ctx.commits == 1
+        log = subprocess.run(
+            ['git', '-C', str(repo), 'log', '--oneline'], check=True, capture_output=True, text=True
+        ).stdout
+        assert '修正 a.txt' in log
+        # 没有改动时再提交要报错，而不是造一个空提交
+        try:
+            git_commit(ctx, 'chore: 空提交')
+            raise AssertionError('无改动提交应该失败')
+        except WriteError as err:
+            assert '没有改动' in str(err), err
+
+
+@case('apply_patch 不匹配的补丁被拒绝且不改动文件')
+def _():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / 'r'
+        repo.mkdir()
+        _init_repo(repo)
+        ctx = WriteContext(workdir=str(repo), push_branch='feat', remote_url=str(repo))
+        try:
+            apply_patch(ctx, '--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-不存在的行\n+xxx\n')
+            raise AssertionError('不匹配的补丁应该失败')
+        except WriteError as err:
+            assert 'git apply 失败' in str(err), err
+        assert (repo / 'a.txt').read_text() == 'v1\n'
+
+
+@case('git_push 推送到指定分支，主干分支被拒绝')
+def _():
+    import subprocess
+
+    with tempfile.TemporaryDirectory() as tmp:
+        remote = Path(tmp) / 'remote.git'
+        subprocess.run(['git', 'init', '-q', '--bare', str(remote)], check=True)
+        local = Path(tmp) / 'local'
+        local.mkdir()
+        _init_repo(local)
+        subprocess.run(['git', '-C', str(local), 'branch', '-M', 'feat'], check=True)
+        subprocess.run(['git', '-C', str(local), 'remote', 'add', 'origin', str(remote)], check=True)
+        subprocess.run(['git', '-C', str(local), 'push', '-q', 'origin', 'feat'], check=True)
+
+        ctx = WriteContext(workdir=str(local), push_branch='feat', remote_url=str(remote))
+        (local / 'a.txt').write_text('v2\n', encoding='utf-8')
+        git_commit(ctx, 'fix: 改 a.txt')
+        assert '已推送' in git_push(ctx)
+
+        pushed = subprocess.run(
+            ['git', '-C', str(remote), 'log', '--oneline', 'feat'], check=True, capture_output=True, text=True
+        ).stdout
+        assert '改 a.txt' in pushed
+
+        # 主干分支不允许直接推
+        blocked = WriteContext(workdir=str(local), push_branch='main', remote_url=str(remote), commits=1)
+        try:
+            git_push(blocked)
+            raise AssertionError('推 main 应该被拒绝')
+        except WriteError as err:
+            assert '主干分支' in str(err), err
+
+        # 没有指定分支时也拒绝
+        empty = WriteContext(workdir=str(local), push_branch='', remote_url=str(remote), commits=1)
+        try:
+            git_push(empty)
+            raise AssertionError('空分支应该被拒绝')
+        except WriteError as err:
+            assert '未指定可推送的源分支' in str(err), err
+
+
+@case('写权限开关：默认关闭，配置可开并可校验工具名')
+def _():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / 'r'
+        (repo / 'agents').mkdir(parents=True)
+        (repo / 'agents' / 'prompt.txt').write_text('p', encoding='utf-8')
+
+        def write_config(entry: dict) -> None:
+            (repo / 'agents' / 'config.json').write_text(
+                json.dumps({'reviewer': {'prompt_file': 'prompt.txt', **entry}}), encoding='utf-8'
+            )
+
+        # 默认关闭写权限
+        write_config({})
+        cfg = load_agent_config(repo)
+        assert cfg.allow_write is False and cfg.require_approval is True
+
+        # 显式打开且要求人工确认（默认）
+        write_config({'write': {'enabled': True}})
+        cfg = load_agent_config(repo)
+        assert cfg.allow_write is True and cfg.require_approval is True
+        assert cfg.write_tools == ['apply_patch', 'git_commit', 'git_push']
+
+        # 直接改源分支
+        write_config({'write': {'enabled': True, 'require_approval': False}})
+        cfg = load_agent_config(repo)
+        assert cfg.allow_write is True and cfg.require_approval is False
+
+        # 未知写工具名直接报错
+        write_config({'write': {'enabled': True, 'tools': ['git_push', 'rm-rf']}})
+        try:
+            load_agent_config(repo)
+            raise AssertionError('未知写工具名应该报错')
+        except ConfigError as err:
+            assert 'write.tools' in str(err), err
+
+        # write 段类型写错也要吵
+        write_config({'write': 'yes'})
+        try:
+            load_agent_config(repo)
+            raise AssertionError('write 段类型错误应该报错')
+        except ConfigError as err:
+            assert 'JSON 对象' in str(err), err
+
+
+@case('build_write_tools 提供三个写工具')
+def _():
+    tools = build_write_tools(WriteContext(workdir='/tmp', push_branch='feat', remote_url='u'))
+    names = sorted(getattr(t, 'name', '').removesuffix('_tool') for t in tools)
+    assert names == ['apply_patch', 'git_commit', 'git_push'], names
+
+
+@case('build_prompt 按写权限模式给出不同指引')
+def _():
+    ctx = {'provider': 'github', 'repo': 'a/b', 'upstream_url': '', 'pr_number': '1',
+           'is_issue': False, 'title': 't', 'body': 'b', 'url': '', 'user': '',
+           'action': '', 'base_sha': 'a' * 40, 'head_sha': 'b' * 40,
+           'base_ref': 'main', 'head_ref': 'feat', 'task_file': ''}
+    assert '写权限' not in build_prompt(ctx)
+    assert '直接落到本条 PR 的源分支' in build_prompt(ctx, 'direct')
+    assert '不许直接改 PR 源分支' in build_prompt(ctx, 'proposal')
 
 
 if __name__ == '__main__':
