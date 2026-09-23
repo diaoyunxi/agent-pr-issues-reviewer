@@ -1,3 +1,5 @@
-requests==2.32.3
-# GitHub App 私钥签 JWT 需要 RS256 签名，cryptography 是唯一为此引入的依赖
+# 只有 httpx/requests 这类基础依赖 + OpenAI Agents SDK；SDK 内部自带工具调用循环，
+# 不再手写 chat/completions 的 tool_calls 处理
+openai-agents==0.22.3
+# GitHub App 私钥签 JWT 需要 RS256 签名（app_auth.py 里用到）
 cryptography==43.0.3

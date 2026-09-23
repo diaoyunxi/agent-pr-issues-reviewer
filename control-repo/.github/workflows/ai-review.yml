@@ -7,6 +7,27 @@ on:
   # 备用触发方式：不依赖 Push，避免清理 JSON 造成仓库膨胀
   repository_dispatch:
     types: [ai-review]
+  # 手动补跑：除了下面这些输入，也可以在仓库变量里配
+  #   UPSTREAM_REPO / AI_API_BASE / AI_API_KEY / AI_MODEL，日常不必手填
+  workflow_dispatch:
+    inputs:
+      upstream_repo:
+        description: '上游（待审查）仓库 URL，如 https://github.com/owner/repo'
+        required: false
+      provider:
+        description: '平台：github / gitee'
+        required: false
+        default: github
+      target_repo:
+        description: '目标仓库 owner/repo（回写评论用）'
+        required: false
+      pr_number:
+        description: 'PR / Issue 编号'
+        required: false
+      is_issue:
+        description: '是否是 Issue（true/false）'
+        required: false
+        default: 'false'
 
 # 同一 PR 的多次提交只保留最新一次审查，旧任务直接被取消
 concurrency:
@@ -15,6 +36,13 @@ concurrency:
 
 permissions:
   contents: write
+
+env:
+  # 上游仓库 URL：真正使用时，待审查仓库里只有本 workflow 文件，
+  # 代码由 agent 自己克隆，所以仓库地址必须由上游设置进来。
+  # 优先级：workflow_dispatch 输入 > 仓库变量 UPSTREAM_REPO > 任务 JSON 的 repo_url/clone_url
+  UPSTREAM_REPO: ${{ inputs.upstream_repo || vars.UPSTREAM_REPO }}
+  PROVIDER: ${{ inputs.provider || vars.PROVIDER || 'github' }}
 
 jobs:
   review:
@@ -29,12 +57,29 @@ jobs:
 
       - name: Read task payload
         id: task
+        env:
+          # workflow_dispatch 时用输入兜底，其余场景走任务 JSON
+          INPUT_PROVIDER: ${{ inputs.provider || vars.PROVIDER || 'github' }}
+          INPUT_REPO: ${{ inputs.target_repo }}
+          INPUT_NUMBER: ${{ inputs.pr_number }}
+          INPUT_ISSUE: ${{ inputs.is_issue || 'false' }}
+          INPUT_UPSTREAM: ${{ inputs.upstream_repo || vars.UPSTREAM_REPO }}
         run: |
           set -euo pipefail
 
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            # repository_dispatch 模式下目标信息直接来自 client_payload
             echo '${{ toJson(github.event.client_payload) }}' > /tmp/task.json
+            TASK_FILE=""
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # 手动触发：输入优先，缺的字段回落到仓库变量
+            jq -n \
+              --arg provider "$INPUT_PROVIDER" \
+              --arg repo "$INPUT_REPO" \
+              --arg number "$INPUT_NUMBER" \
+              --arg is_issue "$INPUT_ISSUE" \
+              --arg repo_url "$INPUT_UPSTREAM" \
+              '{provider: $provider, repo: $repo, pr_number: ($number | tonumber? // 0), is_issue: ($is_issue == "true"), repo_url: $repo_url}' \
+              > /tmp/task.json
             TASK_FILE=""
           else
             # 取本次 push 新增的 JSON；用 diff-tree，避免被其它改动干扰
@@ -45,11 +90,34 @@ jobs:
             cp "$TASK_FILE" /tmp/task.json
           fi
 
+          # 上游仓库 URL 的三级兜底：手动输入/仓库变量 → 任务 JSON → 按平台拼一个默认值
+          UPSTREAM="${UPSTREAM_REPO:-$(jq -r '.repo_url // .clone_url // .upstream_repo // ""' /tmp/task.json)}"
+          TARGET_REPO=$(jq -r '.repo' /tmp/task.json)
+          if [ -z "$UPSTREAM" ] && [ -n "$TARGET_REPO" ]; then
+            case "$(jq -r '.provider' /tmp/task.json)" in
+              gitee) UPSTREAM="https://gitee.com/${TARGET_REPO}.git" ;;
+              *)     UPSTREAM="https://github.com/${TARGET_REPO}.git" ;;
+            esac
+            echo "未设置上游仓库 URL，按目标仓库推导：$UPSTREAM"
+          fi
+          if [ -z "$UPSTREAM" ]; then
+            echo "::error::缺少上游仓库 URL：请在仓库变量/输入里设置 UPSTREAM_REPO"
+            exit 1
+          fi
+
           echo "task_file=$TASK_FILE" >> "$GITHUB_OUTPUT"
           echo "provider=$(jq -r '.provider' /tmp/task.json)" >> "$GITHUB_OUTPUT"
-          echo "target_repo=$(jq -r '.repo' /tmp/task.json)" >> "$GITHUB_OUTPUT"
+          echo "target_repo=$TARGET_REPO" >> "$GITHUB_OUTPUT"
           echo "pr_number=$(jq -r '.pr_number' /tmp/task.json)" >> "$GITHUB_OUTPUT"
           echo "is_issue=$(jq -r '.is_issue' /tmp/task.json)" >> "$GITHUB_OUTPUT"
+          echo "upstream_repo=$UPSTREAM" >> "$GITHUB_OUTPUT"
+          echo "title=$(jq -r '.title // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
+          echo "html_url=$(jq -r '.html_url // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
+          echo "user=$(jq -r '.user // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$(jq -r '.base_sha // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(jq -r '.head_sha // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
+          echo "base_ref=$(jq -r '.base_ref // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$(jq -r '.head_ref // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
 
       - name: Issue app installation token
         id: auth
@@ -103,46 +171,42 @@ jobs:
             echo "fallback_token=$PAT_TOKEN" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Checkout target repo
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ steps.task.outputs.target_repo }}
-          # 拉代码优先用 App 身份：GitHub 目标仓库拿安装令牌，Gitee 目标仓库拿 Gitee 应用令牌，
-          # 都拿不到时回退 PAT_TOKEN（跨平台拉取也只能回退）
-          token: ${{ steps.auth.outputs.checkout_token }}
-          path: target-repo
-          fetch-depth: 0
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
       - name: Install agent deps
-        working-directory: target-repo
         run: |
-          if [ -f agent/requirements.txt ]; then
-            pip install -r agent/requirements.txt
-          fi
+          # 待审查仓库只含本 workflow 文件，agent 脚本不在本地，从控制仓库取
+          python -m pip install --quiet -r agent/requirements.txt
 
       - name: Run AI agent
-        working-directory: target-repo
         env:
-          # App 凭据优先，缺失或失效时 Agent 内部回退到 GITHUB_TOKEN
+          # —— 上游仓库（待审查对象）与任务上下文 ——
+          # 代码由 review.py 自己克隆到 /tmp 的子目录，这里不需要 checkout
+          UPSTREAM_REPO: ${{ steps.task.outputs.upstream_repo }}
+          TARGET_REPO: ${{ steps.task.outputs.target_repo }}
+          PR_NUMBER: ${{ steps.task.outputs.pr_number }}
+          IS_ISSUE: ${{ steps.task.outputs.is_issue }}
+          PROVIDER: ${{ steps.task.outputs.provider }}
+          TITLE: ${{ steps.task.outputs.title }}
+          HTML_URL: ${{ steps.task.outputs.html_url }}
+          USER: ${{ steps.task.outputs.user }}
+          BASE_SHA: ${{ steps.task.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.task.outputs.head_sha }}
+          BASE_REF: ${{ steps.task.outputs.base_ref }}
+          HEAD_REF: ${{ steps.task.outputs.head_ref }}
+          # —— agent 配置文件位置（相对克隆出来的仓库目录）——
+          AGENT_CONFIG: ${{ vars.AGENT_CONFIG || 'agents/config.json' }}
+          AGENT_NAME: ${{ vars.AGENT_NAME }}
+          # —— 模型 ——
+          AI_API_BASE: ${{ secrets.AI_API_BASE || vars.AI_API_BASE }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_MODEL: ${{ secrets.AI_MODEL || vars.AI_MODEL }}
+          # —— 回退凭据（App 凭据优先，缺失或失效时 Agent 内部回退）——
           GH_APP_ID: ${{ secrets.GH_APP_ID }}
           GH_APP_INSTALLATION_ID: ${{ secrets.GH_APP_INSTALLATION_ID }}
           GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
           GITEE_APP_TOKEN: ${{ secrets.GITEE_APP_TOKEN }}
           GITHUB_TOKEN: ${{ steps.auth.outputs.fallback_token }}
           GITEE_API: ${{ secrets.GITEE_API }}
-          AI_API_BASE: ${{ secrets.AI_API_BASE }}
-          AI_API_KEY: ${{ secrets.AI_API_KEY }}
-          AI_MODEL: ${{ secrets.AI_MODEL }}
-          TARGET_REPO: ${{ steps.task.outputs.target_repo }}
-          PR_NUMBER: ${{ steps.task.outputs.pr_number }}
-          IS_ISSUE: ${{ steps.task.outputs.is_issue }}
-          PROVIDER: ${{ steps.task.outputs.provider }}
-        run: python agent/review.py
+        run: PYTHONPATH=agent/src python agent/src/review.py
 
       - name: Cleanup task file
         if: always()

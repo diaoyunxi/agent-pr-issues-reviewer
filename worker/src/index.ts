@@ -29,6 +29,20 @@ interface ReviewTask {
   user: string
   /** 审查类型：opened / synchronize / issue 等，透传给 Agent */
   action: string
+  /**
+   * 上游（待审查）仓库的克隆地址。
+   * Agent 侧只拿到这份 JSON 与一枚令牌，靠这个 URL 自己 clone 代码，
+   * 因此这里必须给出可 clone 的地址，而不是只有 owner/repo。
+   */
+  repo_url: string
+  /** PR 的基线提交，Agent 用它算 diff */
+  base_sha: string
+  /** PR 的最新提交，Agent 按它读代码 */
+  head_sha: string
+  /** 源分支（Gitee 上是 source_branch） */
+  head_ref: string
+  /** 目标分支 */
+  base_ref: string
   created_at: string
 }
 
@@ -152,9 +166,10 @@ function parseGitHubPayload(payload: any): ReviewTask | null {
   if (payload.pull_request) {
     if (!allowed.has(action)) return null
     const pr = payload.pull_request
+    const repo = payload.repository.full_name
     return {
       provider: 'github',
-      repo: payload.repository.full_name,
+      repo,
       pr_number: pr.number,
       is_issue: false,
       title: pr.title ?? '',
@@ -162,15 +177,22 @@ function parseGitHubPayload(payload: any): ReviewTask | null {
       html_url: pr.html_url ?? '',
       user: pr.user?.login ?? '',
       action,
+      // 上游仓库地址：Agent 靠它 clone，优先用 payload 里的 clone_url，回退按 repo 拼
+      repo_url: payload.repository.clone_url ?? `https://github.com/${repo}.git`,
+      base_sha: pr.base?.sha ?? '',
+      head_sha: pr.head?.sha ?? '',
+      base_ref: pr.base?.ref ?? '',
+      head_ref: pr.head?.ref ?? '',
       created_at: new Date().toISOString(),
     }
   }
 
   if (payload.issue && action === 'opened') {
     const issue = payload.issue
+    const repo = payload.repository.full_name
     return {
       provider: 'github',
-      repo: payload.repository.full_name,
+      repo,
       pr_number: issue.number,
       is_issue: true,
       title: issue.title ?? '',
@@ -178,6 +200,11 @@ function parseGitHubPayload(payload: any): ReviewTask | null {
       html_url: issue.html_url ?? '',
       user: issue.user?.login ?? '',
       action,
+      repo_url: payload.repository.clone_url ?? `https://github.com/${repo}.git`,
+      base_sha: '',
+      head_sha: '',
+      base_ref: '',
+      head_ref: '',
       created_at: new Date().toISOString(),
     }
   }
@@ -189,9 +216,10 @@ function parseGiteePayload(payload: any): ReviewTask | null {
   // Gitee 的 PR 事件里 pull_request 与 issue 事件里 issue 的结构与 GitHub 不同名
   if (payload.pull_request) {
     const pr = payload.pull_request
+    const repo = payload.repository?.full_name ?? payload.project?.path_with_namespace ?? ''
     return {
       provider: 'gitee',
-      repo: payload.repository?.full_name ?? payload.project?.path_with_namespace ?? '',
+      repo,
       pr_number: pr.number,
       is_issue: false,
       title: pr.title ?? '',
@@ -199,15 +227,22 @@ function parseGiteePayload(payload: any): ReviewTask | null {
       html_url: pr.html_url ?? '',
       user: pr.user?.login ?? '',
       action: payload.action ?? 'update',
+      repo_url: pr.head?.repo?.clone_url ?? `https://gitee.com/${repo}.git`,
+      base_sha: pr.base?.sha ?? '',
+      head_sha: pr.head?.sha ?? '',
+      base_ref: pr.base?.ref ?? '',
+      // Gitee 的 PR 结构用 source_branch / target_branch，不是 head.ref / base.ref
+      head_ref: pr.head?.ref ?? pr.source_branch ?? '',
       created_at: new Date().toISOString(),
     }
   }
 
   if (payload.issue) {
     const issue = payload.issue
+    const repo = payload.repository?.full_name ?? payload.project?.path_with_namespace ?? ''
     return {
       provider: 'gitee',
-      repo: payload.repository?.full_name ?? payload.project?.path_with_namespace ?? '',
+      repo,
       pr_number: issue.number,
       is_issue: true,
       title: issue.title ?? '',
@@ -215,6 +250,13 @@ function parseGiteePayload(payload: any): ReviewTask | null {
       html_url: issue.html_url ?? '',
       user: issue.user?.login ?? '',
       action: payload.action ?? 'update',
+      repo_url: (payload.repository ?? payload.project)?.html_url
+        ? `${((payload.repository ?? payload.project).html_url as string).replace(/\/$/, '')}.git`
+        : `https://gitee.com/${repo}.git`,
+      base_sha: '',
+      head_sha: '',
+      base_ref: '',
+      head_ref: '',
       created_at: new Date().toISOString(),
     }
   }
