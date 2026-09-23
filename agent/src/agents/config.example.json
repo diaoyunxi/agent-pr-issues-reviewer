@@ -1,0 +1,15 @@
+{
+  "reviewer": {
+    "name": "code-reviewer",
+    "prompt_file": "prompt.txt",
+    "model": "gpt-4o-mini",
+    "temperature": 0.2,
+    "max_turns": 20,
+    "workdir": ".",
+    "tools": ["bash"],
+    "bash": {
+      "timeout_seconds": 120,
+      "max_output_chars": 30000
+    }
+  }
+}
