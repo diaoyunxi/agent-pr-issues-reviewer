@@ -2,6 +2,12 @@
 export interface AppEnv {
   /** 中转仓库，格式 owner/repo */
   CONTROL_REPO: string
+  /**
+   * 机器人在评论里的 @ 名称（GitHub / Gitee 各配一份）。
+   * 评论里必须出现 `@BOT_NAME ` 才会触发；PR/Issue 开启时用它判断是否按 @ 的模式执行。
+   * 不配则退化为"任意 @ 提及"（Issue 开启也会被认为是 @ 了机器人）。
+   */
+  BOT_NAME?: string
   /** 个人令牌，App 不可用时回退用；写中转仓库也需要它 */
   GITHUB_PAT: string
   /** Gitee 个人令牌，Gitee App 不可用时回退用 */

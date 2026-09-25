@@ -6,7 +6,7 @@
  * 因此 Gitee 侧直接透传，仅在它失效时回退 PAT。
  */
 
-import type { AppEnv } from './env'
+import type { AppEnv } from './env.ts'
 
 const JWT_TTL_SECONDS = 540
 /** 令牌过期前提前刷新，避免请求途中正好失效 */

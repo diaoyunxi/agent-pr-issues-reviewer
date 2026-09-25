@@ -105,6 +105,86 @@ def _():
         assert cfg.resolve_workdir(root) == root
 
 
+@case('配置加载：按模式选提示词')
+def _():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / 'agents').mkdir()
+        (root / 'agents' / 'prompt-review.txt').write_text('评审模式', encoding='utf-8')
+        (root / 'agents' / 'prompt-work.txt').write_text('干活模式', encoding='utf-8')
+        (root / 'agents' / 'config.json').write_text(
+            json.dumps({'a': {'prompt_file': 'prompt.txt', 'tools': ['bash']}}),
+            encoding='utf-8',
+        )
+        # 没配 prompt_file_review/work 时按约定名自动挑
+        review = load_agent_config(root, mode='review')
+        work = load_agent_config(root, mode='work')
+        assert review.instructions == '评审模式' and review.mode == 'review'
+        assert work.instructions == '干活模式' and work.mode == 'work'
+        assert review.prompt_file.endswith('prompt-review.txt')
+
+        # 显式配了 prompt_file_xxx 时优先用它
+        (root / 'agents' / 'custom-work.txt').write_text('自定义', encoding='utf-8')
+        (root / 'agents' / 'config.json').write_text(
+            json.dumps({'a': {'prompt_file': 'prompt.txt', 'prompt_file_work': 'custom-work.txt'}}),
+            encoding='utf-8',
+        )
+        assert load_agent_config(root, mode='work').instructions == '自定义'
+
+        # MODE 环境变量兜底，非法模式要吵
+        os.environ['MODE'] = 'review'
+        try:
+            assert load_agent_config(root).mode == 'review'
+            os.environ['MODE'] = 'chat'
+            try:
+                load_agent_config(root)
+            except ConfigError as err:
+                assert '不支持的模式' in str(err)
+            else:
+                raise AssertionError('非法模式未报错')
+        finally:
+            os.environ.pop('MODE', None)
+
+
+@case('配置加载：只配 prompt.txt 时两种模式共用（老仓库兼容）')
+def _():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / 'agents').mkdir()
+        (root / 'agents' / 'prompt.txt').write_text('老提示词', encoding='utf-8')
+        (root / 'agents' / 'config.json').write_text(
+            json.dumps({'a': {'prompt_file': 'prompt.txt'}}),
+            encoding='utf-8',
+        )
+        assert load_agent_config(root, mode='review').instructions == '老提示词'
+        assert load_agent_config(root, mode='work').instructions == '老提示词'
+
+
+@case('build_prompt 的 work 模式带出用户要求')
+def _():
+    ctx = {'provider': 'github', 'repo': 'a/b', 'upstream_url': '', 'pr_number': '9',
+           'is_issue': False, 'title': 't', 'body': '描述', 'url': '', 'user': 'u',
+           'action': 'created', 'mode': 'work', 'instruction': '把 README 里的 x 改成 y',
+           'base_sha': '', 'head_sha': '', 'base_ref': '', 'head_ref': 'feat', 'task_file': ''}
+    prompt = build_prompt(ctx)
+    assert '用户的要求' in prompt and '把 README 里的 x 改成 y' in prompt
+    # review 模式不带要求段落
+    ctx['mode'] = 'review'
+    assert '用户的要求' not in build_prompt(ctx)
+
+
+@case('build_context 读到 mode / instruction')
+def _():
+    saved = dict(os.environ)
+    try:
+        os.environ.update({'MODE': 'work', 'INSTRUCTION': '改个 bug'})
+        ctx = build_context()
+        assert ctx['mode'] == 'work' and ctx['instruction'] == '改个 bug'
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
 @case('配置加载：按名字选 agent')
 def _():
     with tempfile.TemporaryDirectory() as tmp:

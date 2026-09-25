@@ -1,4 +1,8 @@
-"""AI 审查入口：解析配置 → 完整克隆上游仓库到 /tmp → 在仓库内跑 bash agent → 回写评论。
+"""AI 执行入口：解析配置 → 完整克隆上游仓库到 /tmp → 在仓库内跑 bash agent → 回写评论。
+
+两种模式共用这一条链路，由任务 JSON 的 `mode` 决定行为与提示词：
+- `review`：只评审，禁止改仓库（默认）；
+- `work`：按评论里的自然语言要求干活，提示词里明确允许 `git commit` / `git push`。
 
 工作流（CI）只需要传两个东西：**上游仓库 URL**（UPSTREAM_REPO）与任务 JSON
 （PR/Issue 元数据）。代码由脚本自己 `git clone` 到 /tmp 的子目录，
@@ -31,6 +35,8 @@ from task_context import build_context, build_prompt
 from tools import ShellContext
 
 COMMENT_MARKER = "<!-- ai-review-agent -->"
+# 评论标题按模式区分，同一 PR 上 review / work 的产出一眼能分清
+TITLES = {"review": "## 🤖 AI 代码审查", "work": "## 🤖 AI 执行结果"}
 # 克隆根目录：所有仓库都放在 /tmp 的子目录下，跑完即随容器销毁
 CLONE_ROOT = os.environ.get("CLONE_ROOT", "/tmp")
 
@@ -73,6 +79,11 @@ def main() -> int:
     is_issue = ctx["is_issue"]
     number = int(ctx["pr_number"] or 0)
     repo = ctx["repo"]
+    mode = (ctx.get("mode") or "review").lower()
+    if mode not in TITLES:
+        mode = "review"
+    title = TITLES[mode]
+    print(f"[review] 执行模式：{mode}")
 
     provider_client: TokenProvider = build_token_provider(provider)
 
@@ -87,7 +98,7 @@ def main() -> int:
 
     def fail(reason: str) -> int:
         body = (
-            f"{COMMENT_MARKER}\n## 🤖 AI 代码审查失败\n\n"
+            f"{COMMENT_MARKER}\n{title}失败\n\n"
             f"{reason}\n\n请检查上游仓库 URL、仓库权限与 Actions 日志。"
         )
         print(f"[review] {reason}")
@@ -100,6 +111,8 @@ def main() -> int:
 
     # 1) 完整克隆上游仓库到 /tmp 的子目录
     upstream = ctx["upstream_url"]
+    # work 模式要提交代码：评论触发时任务里没有 base/head sha，必须按分支克隆才能推回
+    branch_for_clone = "" if mode == "work" else ctx["head_ref"]
     print(f"[review] 完整克隆上游仓库：{mask_url(upstream)} → {CLONE_ROOT}")
     try:
         # 完整克隆（全量历史、全部分支），之后再把工作区切到待审查的 head
@@ -107,22 +120,26 @@ def main() -> int:
             url=upstream,
             token=token,
             provider=provider,
-            branch=ctx["head_ref"],
+            branch=branch_for_clone,
             base_sha=ctx["base_sha"],
             head_sha=ctx["head_sha"],
             workdir=CLONE_ROOT,
         )
-        checkout_head(repo_dir, ctx["head_sha"], ctx["head_ref"])
+        # work 模式留在克隆出来的默认分支上（要推回源分支）；其余按 head_sha 精确检出
+        if mode == "work":
+            checkout_head(repo_dir, "", ctx["head_ref"])
+        else:
+            checkout_head(repo_dir, ctx["head_sha"], ctx["head_ref"])
     except RepoError as err:
         return fail(f"克隆上游仓库失败：`{err}`")
 
-    # 2) 读配置（config.json + prompt.txt），工作目录锁在仓库内
+    # 2) 读配置（config.json + 按模式选提示词），工作目录锁在仓库内
     try:
-        cfg = load_agent_config(repo_dir)
+        cfg = load_agent_config(repo_dir, mode=mode)
         workspace = cfg.resolve_workdir(repo_dir)
     except ConfigError as err:
         return fail(f"agent 配置不可用：`{err}`")
-    print(f"[review] agent={cfg.name} 工作目录={workspace}")
+    print(f"[review] agent={cfg.name} 模式={cfg.mode} 工作目录={workspace}")
     print(f"[review] 系统提示词：{cfg.prompt_file}（{len(cfg.instructions)} 字符）")
 
     # 3) 跑 agent：只给 bash，环境变量剔掉凭据
@@ -137,11 +154,11 @@ def main() -> int:
 
     try:
         result = run_agent(cfg, shell, build_prompt(ctx), workspace)
-        body = f"{COMMENT_MARKER}\n## 🤖 AI 代码审查\n\n{result}"
+        body = f"{COMMENT_MARKER}\n{title}\n\n{result}"
     except (AgentRunError, Exception) as err:  # noqa: BLE001 - 任何异常都要回报到 PR
         traceback.print_exc()
         body = (
-            f"{COMMENT_MARKER}\n## 🤖 AI 代码审查失败\n\n"
+            f"{COMMENT_MARKER}\n{title}失败\n\n"
             f"任务执行异常：`{type(err).__name__}: {err}`\n\n"
             "请检查 Actions 日志与环境变量配置。"
         )
