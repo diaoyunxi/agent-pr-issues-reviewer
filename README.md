@@ -1,10 +1,17 @@
 # Agent PR / Issue Reviewer
 
-基于 **Cloudflare Worker + GitHub Actions** 的自动化 AI 代码审查系统。
+基于 **Cloudflare Worker + GitHub Actions** 的自动化 AI 代码助手：既能**审查代码**，也能按评论里的自然语言要求**直接改代码**。
 
 控制面（公开中转仓库）与数据面（目标业务仓库）分离：Worker 只负责「登记任务」，Actions 只负责「跑 Agent + 回写评论」。
 
-Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上游仓库 `git clone` 到 `/tmp` 的子目录，然后在仓库里自己读代码；行为由目标仓库里的 `agents/config.json` + `agents/prompt.txt` 决定，改配置不用改代码。
+Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上游仓库 `git clone` 到 `/tmp` 的子目录，然后在仓库里自己读代码；行为由目标仓库里的 `agents/config.json` 与两份提示词（`prompt-review.txt` / `prompt-work.txt`）决定，改配置不用改代码。
+
+触发方式有两种 **mode**：
+
+- **review（评审）**：PR 开启时默认走这条；也可以评论 `@你的App review` 手动触发。
+- **work（干活）**：评论 `@你的App work 把 README 里的链接改成 xxx`，模型按描述改代码并提交。
+
+规则细节见「[模块一 → 触发规则](#触发规则哪些事件会跑跑什么模式)」。
 
 ## 数据流向
 
@@ -13,8 +20,8 @@ Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上�
       │
       ▼
 [Cloudflare Worker]  (模块一)
-      │ 1. 校验签名，提取 repo / PR号 / 标题 / 内容 / URL / user / base+head sha
-      │ 2. 生成唯一文件 tasks/{目标仓库名}-{PR号}-{时间戳}.json
+      │ 1. 校验签名，按触发规则算 mode，提取 repo / 编号 / 标题 / 内容 / URL / user / base+head sha
+      │ 2. 生成唯一文件 tasks/{目标仓库名}-{编号}-{时间戳}.json（含 mode 与 work 的自然语言要求）
       │ 3. 用 GitHub App 安装令牌（回退 PAT）将文件 Push 至【中转仓库】
       ▼
 [公开中转仓库] (被 Push 触发)
@@ -26,8 +33,8 @@ Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上�
       │ 3. 换发 GitHub App 安装令牌 / Gitee 应用令牌（失败回退 PAT）
       │ 4. 把这枚令牌与 UPSTREAM_REPO 一起交给 agent
       │ 5. AI Agent (模块三)：git clone 上游仓库到 /tmp 的子目录
-      │ 6. 在仓库目录里跑「只有 bash」的 agent（读 config.json + prompt.txt）
-      │ 7. 用同一身份将审查结果评论回写至【目标仓库】
+      │ 6. 在仓库目录里跑「只有 bash」的 agent（按 mode 读 prompt-review.txt 或 prompt-work.txt）
+      │ 7. 用同一身份将结果评论回写至【目标仓库】（work 模式还会 commit + push）
       │ 8. 清理中转仓库里的 JSON 文件
       ▼
 [目标仓库 PR 评论区]
@@ -44,10 +51,12 @@ Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上�
 ├── package.json            #   Worker 依赖与 deploy 脚本
 ├── tsconfig.json           #   Worker 类型检查配置
 ├── worker/
-│   └── src/
-│       ├── index.ts        #   签名校验 / 信息提取 / 触发中转
-│       ├── app-auth.ts     #   GitHub/Gitee App 令牌换发与 PAT 回退
-│       └── env.ts          #   Worker 环境变量与密钥的类型声明
+│   ├── src/
+│   │   ├── index.ts        #   签名校验 / 触发规则 / 信息提取 / 触发中转
+│   │   ├── mode.ts         #   `@BOT_NAME review|work` 的识别
+│   │   ├── app-auth.ts     #   GitHub/Gitee App 令牌换发与 PAT 回退
+│   │   └── env.ts          #   Worker 环境变量与密钥的类型声明
+│   └── tests/              #   Worker 单测：触发规则 + @模式识别（npm test）
 ├── control-repo/           # 中转仓库（内容需复制到中转仓库根目录）
 │   └── .github/workflows/
 │       └── ai-review.yml   # 模块二：GitHub Actions
@@ -55,7 +64,7 @@ Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上�
     ├── requirements.txt    #   openai-agents + cryptography
     └── src/
         ├── review.py       #   入口：读配置 → 完整克隆上游仓库到 /tmp → 跑 agent → 回写评论
-        ├── config.py       #   agents/config.json + prompt.txt 的加载与校验
+        ├── config.py       #   agents/config.json + 按模式选提示词的加载与校验
         ├── task_context.py #   任务 JSON / 环境变量 → 模型首条消息
         ├── agent_runner.py #   组装 OpenAI Agents SDK 的 Agent 并运行
         ├── repo.py         #   克隆到 /tmp 子目录、URL 脱敏、环境变量清洗
@@ -63,7 +72,8 @@ Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上�
         ├── app_auth.py     #   App 令牌优先、PAT 回退的 TokenProvider
         └── agents/
             ├── config.example.json  # agent 配置示例（目标仓库放 config.json）
-            ├── prompt.txt           # 系统提示词，纯文本
+            ├── prompt-review.txt    # review 模式提示词，纯文本
+            ├── prompt-work.txt      # work 模式提示词（允许改代码并提交）
             └── task.example.json    # 任务 JSON 字段示例
 ```
 
@@ -75,8 +85,10 @@ Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上�
 
 1. **中转仓库**：新建公开仓库，把 `control-repo/.github/workflows/ai-review.yml` 放进去，创建空的 `tasks/` 目录。
    `agent/` 脚本**留在中转仓库**即可，CI 直接从本仓库调用，不需要下发到目标仓库。
-2. **目标仓库**：只要放两个文件到 `agents/` 目录——`agents/config.json`（可从
-   `agent/src/agents/config.example.json` 复制）与 `agents/prompt.txt`。
+2. **目标仓库**：只要放配置与提示词到 `agents/` 目录——`agents/config.json`（可从
+   `agent/src/agents/config.example.json` 复制），提示词按模式拆成
+   `agents/prompt-review.txt`（评审用）与 `agents/prompt-work.txt`（干活用），由用户自行编写；
+   只放一份 `agents/prompt.txt` 也可以，两种模式会共用它。
    代码由 agent 自己克隆，**不需要**再往目标仓库塞 agent 脚本，也不需要改目标仓库的 workflow。
    同时在**中转仓库**的 Variables 里配好 `UPSTREAM_REPO`（上游仓库 URL，多个仓库用输入覆盖）。
 3. **配置 App（推荐）**：建好 GitHub App 与 Gitee 应用，把私钥/令牌写进密钥（见「App 身份配置」一节）。
@@ -90,6 +102,28 @@ Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上�
 
 ## 模块一：Cloudflare Worker（TypeScript）
 
+### 触发规则：哪些事件会跑，跑什么模式
+
+所有触发都会归一化成 `mode`：
+
+| 事件 | 条件 | 结果 |
+| --- | --- | --- |
+| PR 开启类（`opened` / `reopened` / `synchronize` / `ready_for_review`） | 正文里没有 `@BOT_NAME` | `mode=review`（默认评审） |
+| PR 开启类 | PR 描述里 `@BOT_NAME review\|work` | 按 @ 出来的模式 |
+| Issue 开启（`opened`） | 正文里没有 `@BOT_NAME` | **丢弃**（返回 204，不入队） |
+| Issue 开启 | 正文里 `@BOT_NAME review\|work` | 按 @ 出来的模式 |
+| 评论（GitHub `issue_comment` / Gitee `note`） | 正文里 `@BOT_NAME ` 且后面跟 `review` / `work` | 按 @ 出来的模式（PR 评论、Issue 评论都支持） |
+| 评论 | 没 @ 机器人，或 @ 了但后面不是 `review` / `work` | **丢弃** |
+
+- `@` 的识别：`@` + `BOT_NAME` + 一个空格；`@BOT_NAME3` 不算命中（名字后必须是空白）。
+- 大小写不敏感（`Review` / `WORK` 都认）。
+- 模式词后面：
+  - `review` → 评审，后面的多余文字忽略，`instruction` 为空；
+  - `work` → 模式词之后的**原文**（含多行、代码块）整体作为 `instruction` 交给 Agent；
+    不用打引号，直接写自然语言。
+- `BOT_NAME` 是 Worker 的环境变量（GitHub / Gitee 各配一份，值就是评论里 @ 的那个 App 名称）；
+  不配则退化成"任意 `@xxx` 提及"，此时 Issue 开启也会被当成 @ 了机器人而处理，线上务必配。
+
 `worker/src/index.ts`：
 
 ```ts
@@ -97,19 +131,29 @@ Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上�
  * Webhook 接收器与转发器。
  *
  * 接收 GitHub / Gitee 的 Webhook，把目标仓库与 PR/Issue 信息落成一个 JSON 任务文件，
- * Push 到公开中转仓库，由中转仓库的 GitHub Actions 拉起 AI 审查。
+ * Push 到公开中转仓库，由中转仓库的 GitHub Actions 拉起 AI 执行（审查或干活）。
  *
- * 之所以要中转：审查方的 Actions 跑在公开中转仓库上（免费额度），
- * 而代码要从目标仓库拉取，所以这里只传递"审谁"的描述，不传递代码本身。
+ * 之所以要中转：执行方的 Actions 跑在公开中转仓库上（免费额度），
+ * 而代码要从目标仓库拉取，所以这里只传递"对谁做什么"的描述，不传递代码本身。
+ *
+ * 触发规则（统一归一化成 mode: review | work）：
+ * - PR 开启类事件（opened 等）：默认 mode=review，除非正文/描述里 @ 了机器人在先；
+ * - Issue 开启：默认不管，除非正文里 @ 了机器人；
+ * - 评论事件（issue_comment / note）：只有正文里 `@BOT_NAME ` 之后跟 review / work 才处理，
+ *   否则连同 Issue 上的评论一起丢弃；
+ * - @ 的识别：`@` + BOT_NAME + 一个空格，后面第一个词是 review 或 work；
+ *   review → 评审，work → 按后面的自然语言描述干活。
  *
  * 写中转仓库的身份优先用 App：GitHub 走 App 安装令牌，Gitee 走 App access_token，
  * 两者都拿不到时回退个人令牌，见 app-auth.ts。
  */
 
-import { resolveToken } from './app-auth'
-import type { AppEnv } from './env'
+import { resolveToken } from './app-auth.ts'
+import type { AppEnv } from './env.ts'
+import { implicitMode, parseBotDirective, type TaskMode } from './mode.ts'
 
 export type Env = AppEnv
+export type { TaskMode }
 
 interface ReviewTask {
   /** 平台标识，Agent 端据此选择 API 基址与鉴权方式 */
@@ -122,10 +166,14 @@ interface ReviewTask {
   body: string
   html_url: string
   user: string
-  /** 审查类型：opened / synchronize / issue 等，透传给 Agent */
+  /** 事件动作：opened / synchronize / created 等，透传给 Agent */
   action: string
+  /** 执行模式，Agent 端据此选配置与提示词 */
+  mode: TaskMode
+  /** work 模式下的自然语言要求：`@BOT_NAME work ` 之后的原文；review 模式为空串 */
+  instruction: string
   /**
-   * 上游（待审查）仓库的克隆地址。
+   * 上游（待执行）仓库的克隆地址。
    * Agent 侧只拿到这份 JSON 与一枚令牌，靠这个 URL 自己 clone 代码，
    * 因此这里必须给出可 clone 的地址，而不是只有 owner/repo。
    */
@@ -158,12 +206,12 @@ export default {
 
     let task: ReviewTask | null
     try {
-      task = parsePayload(provider, JSON.parse(rawBody))
+      task = parsePayload(provider, JSON.parse(rawBody), request, env)
     } catch (err) {
       return new Response(`Bad payload: ${(err as Error).message}`, { status: 400 })
     }
 
-    // 不是 PR/Issue 相关事件，直接忽略，避免噪声触发
+    // 不是要处理的事件（未 @ 机器人的评论、Issue 开启等），直接忽略，避免噪声触发
     if (!task) {
       // 204 不允许带 body，状态码本身就是全部信息
       return new Response(null, { status: 204 })
@@ -247,21 +295,80 @@ function timingSafeEqual(a: string, b: string): boolean {
 }
 
 /** 把两个平台的 Payload 归一化成同一份任务描述 */
-function parsePayload(provider: 'github' | 'gitee', payload: any): ReviewTask | null {
-  if (provider === 'gitee') {
-    return parseGiteePayload(payload)
-  }
-  return parseGitHubPayload(payload)
+function parsePayload(
+  provider: 'github' | 'gitee',
+  payload: any,
+  request: Request,
+  env: Env,
+): ReviewTask | null {
+  // 机器人 @ 名来自环境变量 BOT_NAME；不配就退化成"任意 @ 提及"
+  const botName = (env.BOT_NAME ?? '').trim()
+  // 评论事件（GitHub issue_comment / Gitee note）与 PR 等事件的处理规则不同，先区分开
+  const event = (request.headers.get('x-github-event') ?? request.headers.get('x-gitee-event') ?? '').trim()
+  const comment = event === 'issue_comment' || event === 'note'
+  return provider === 'gitee'
+    ? parseGiteePayload(payload, botName, comment)
+    : parseGitHubPayload(payload, botName, comment)
 }
 
-function parseGitHubPayload(payload: any): ReviewTask | null {
+/**
+ * PR 开启类事件：@ 了机器人就按 @ 的模式走，否则默认 review。
+ * 取的是 PR 描述正文（GitHub 在 `pull_request` 事件里同时给出 PR 与可选 comment）。
+ */
+function prEventMode(payload: any, botName: string): { mode: TaskMode; instruction: string } {
+  for (const text of [payload.comment?.body, payload.pull_request?.body]) {
+    const directive = parseBotDirective(text, botName)
+    if (directive) return directive
+  }
+  for (const text of [payload.comment?.body, payload.pull_request?.body]) {
+    const mode = implicitMode(text, botName)
+    if (mode) return { mode, instruction: '' }
+  }
+  return { mode: 'review', instruction: '' }
+}
+
+function parseGitHubPayload(payload: any, botName: string, isComment: boolean): ReviewTask | null {
   const action: string = payload.action ?? ''
-  const allowed = new Set(['opened', 'reopened', 'synchronize', 'ready_for_review'])
+  const commentBody: string = payload.comment?.body ?? ''
+
+  // 评论事件：必须有 `@BOT_NAME review|work` 才处理，其余一律丢弃
+  if (isComment || action === 'created') {
+    if (!payload.issue) return null
+    const directive = parseBotDirective(commentBody, botName)
+    if (!directive) return null
+    const issue = payload.issue
+    const repo = payload.repository?.full_name ?? ''
+    // GitHub 评论接口两个平台一致：PR 的评论也走 issues/{n}/comments
+    return {
+      provider: 'github',
+      repo,
+      pr_number: issue.number,
+      // 是 PR 就回写到 PR，否则回写到 Issue
+      is_issue: !issue.pull_request,
+      title: issue.title ?? '',
+      // work 模式下评论正文就是这条任务的要求，交给 Agent 读，避免只传 instruction 丢上下文
+      body: commentBody,
+      html_url: issue.html_url ?? payload.comment?.html_url ?? '',
+      user: payload.comment?.user?.login ?? '',
+      action: action || 'created',
+      mode: directive.mode,
+      instruction: directive.instruction,
+      repo_url:
+        payload.repository?.clone_url ?? (repo ? `https://github.com/${repo}.git` : ''),
+      base_sha: '',
+      head_sha: '',
+      base_ref: '',
+      head_ref: '',
+      created_at: new Date().toISOString(),
+    }
+  }
 
   if (payload.pull_request) {
+    const allowed = new Set(['opened', 'reopened', 'synchronize', 'ready_for_review'])
     if (!allowed.has(action)) return null
     const pr = payload.pull_request
     const repo = payload.repository.full_name
+    const { mode, instruction } = prEventMode(payload, botName)
     return {
       provider: 'github',
       repo,
@@ -272,6 +379,8 @@ function parseGitHubPayload(payload: any): ReviewTask | null {
       html_url: pr.html_url ?? '',
       user: pr.user?.login ?? '',
       action,
+      mode,
+      instruction,
       // 上游仓库地址：Agent 靠它 clone，优先用 payload 里的 clone_url，回退按 repo 拼
       repo_url: payload.repository.clone_url ?? `https://github.com/${repo}.git`,
       base_sha: pr.base?.sha ?? '',
@@ -282,7 +391,10 @@ function parseGitHubPayload(payload: any): ReviewTask | null {
     }
   }
 
+  // Issue 开启默认不管；只有描述里 @ 了机器人才按 @ 的模式处理
   if (payload.issue && action === 'opened') {
+    const directive = parseBotDirective(payload.issue.body ?? '', botName)
+    if (!directive) return null
     const issue = payload.issue
     const repo = payload.repository.full_name
     return {
@@ -295,6 +407,8 @@ function parseGitHubPayload(payload: any): ReviewTask | null {
       html_url: issue.html_url ?? '',
       user: issue.user?.login ?? '',
       action,
+      mode: directive.mode,
+      instruction: directive.instruction,
       repo_url: payload.repository.clone_url ?? `https://github.com/${repo}.git`,
       base_sha: '',
       head_sha: '',
@@ -307,11 +421,49 @@ function parseGitHubPayload(payload: any): ReviewTask | null {
   return null
 }
 
-function parseGiteePayload(payload: any): ReviewTask | null {
+function parseGiteePayload(payload: any, botName: string, isComment: boolean): ReviewTask | null {
+  const repo = payload.repository?.full_name ?? payload.project?.path_with_namespace ?? ''
+  const repoUrl =
+    (payload.repository ?? payload.project)?.html_url
+      ? `${((payload.repository ?? payload.project).html_url as string).replace(/\/$/, '')}.git`
+      : repo
+        ? `https://gitee.com/${repo}.git`
+        : ''
+  const action: string = payload.action ?? ''
+  const commentBody: string = payload.comment?.body ?? ''
+
+  // 评论事件（note）：同样必须 @BOT_NAME + 模式，且要能判断目标 Issue / PR
+  if (isComment || action === 'created') {
+    const issue = payload.issue ?? payload.pull_request
+    if (!issue) return null
+    const directive = parseBotDirective(commentBody, botName)
+    if (!directive) return null
+    const isIssue = Boolean(payload.issue) && !payload.issue?.pull_request && !payload.pull_request
+    return {
+      provider: 'gitee',
+      repo,
+      pr_number: issue.number,
+      is_issue: isIssue,
+      title: issue.title ?? '',
+      body: commentBody,
+      html_url: issue.html_url ?? payload.comment?.html_url ?? '',
+      user: payload.comment?.user?.login ?? '',
+      action: action || 'created',
+      mode: directive.mode,
+      instruction: directive.instruction,
+      repo_url: repoUrl,
+      base_sha: '',
+      head_sha: '',
+      base_ref: '',
+      head_ref: '',
+      created_at: new Date().toISOString(),
+    }
+  }
+
   // Gitee 的 PR 事件里 pull_request 与 issue 事件里 issue 的结构与 GitHub 不同名
   if (payload.pull_request) {
     const pr = payload.pull_request
-    const repo = payload.repository?.full_name ?? payload.project?.path_with_namespace ?? ''
+    const { mode, instruction } = prEventMode(payload, botName)
     return {
       provider: 'gitee',
       repo,
@@ -321,8 +473,10 @@ function parseGiteePayload(payload: any): ReviewTask | null {
       body: pr.body ?? '',
       html_url: pr.html_url ?? '',
       user: pr.user?.login ?? '',
-      action: payload.action ?? 'update',
-      repo_url: pr.head?.repo?.clone_url ?? `https://gitee.com/${repo}.git`,
+      action: action || 'update',
+      mode,
+      instruction,
+      repo_url: pr.head?.repo?.clone_url ?? repoUrl,
       base_sha: pr.base?.sha ?? '',
       head_sha: pr.head?.sha ?? '',
       base_ref: pr.base?.ref ?? '',
@@ -332,9 +486,11 @@ function parseGiteePayload(payload: any): ReviewTask | null {
     }
   }
 
+  // Issue 开启：默认不管，@ 了机器人（正文里先 @ 再跟模式词）才处理
   if (payload.issue) {
+    const directive = parseBotDirective(payload.issue.body ?? '', botName)
+    if (!directive) return null
     const issue = payload.issue
-    const repo = payload.repository?.full_name ?? payload.project?.path_with_namespace ?? ''
     return {
       provider: 'gitee',
       repo,
@@ -344,10 +500,10 @@ function parseGiteePayload(payload: any): ReviewTask | null {
       body: issue.body ?? '',
       html_url: issue.html_url ?? '',
       user: issue.user?.login ?? '',
-      action: payload.action ?? 'update',
-      repo_url: (payload.repository ?? payload.project)?.html_url
-        ? `${((payload.repository ?? payload.project).html_url as string).replace(/\/$/, '')}.git`
-        : `https://gitee.com/${repo}.git`,
+      action: action || 'update',
+      mode: directive.mode,
+      instruction: directive.instruction,
+      repo_url: repoUrl,
       base_sha: '',
       head_sha: '',
       base_ref: '',
@@ -381,7 +537,7 @@ async function pushTaskToControlRepo(env: Env, task: ReviewTask): Promise<void> 
       'User-Agent': 'agent-pr-reviewer-worker',
     },
     body: JSON.stringify({
-      message: `chore: enqueue review task for ${task.repo}#${task.pr_number} [skip ci]`,
+      message: `chore: enqueue ${task.mode} task for ${task.repo}#${task.pr_number} [skip ci]`,
       content: base64Encode(JSON.stringify(task, null, 2)),
     }),
   })
@@ -409,6 +565,7 @@ function base64Encode(input: string): string {
 npx wrangler secret put GITHUB_PAT              # 个人令牌，App 不可用时回退，且写中转仓库需要它
 npx wrangler secret put GITHUB_WEBHOOK_SECRET
 npx wrangler secret put GITEE_WEBHOOK_SECRET    # 只接 GitHub 时可省略
+npx wrangler secret put BOT_NAME                # 评论里 @ 的 App 名称，触发规则靠它匹配
 npx wrangler secret put GITEE_PAT               # Gitee 个人令牌，Gitee App 失效时回退
 # —— 以下是 App 身份，可选；不配则全部走个人令牌 ——
 npx wrangler secret put GH_APP_ID
@@ -474,6 +631,13 @@ on:
         description: '是否是 Issue（true/false）'
         required: false
         default: 'false'
+      mode:
+        description: '执行模式：review（只评审）/ work（按 instruction 干活）'
+        required: false
+        default: 'review'
+      instruction:
+        description: 'work 模式的自然语言要求'
+        required: false
 
 # 同一 PR 的多次提交只保留最新一次审查，旧任务直接被取消
 concurrency:
@@ -509,6 +673,8 @@ jobs:
           INPUT_REPO: ${{ inputs.target_repo }}
           INPUT_NUMBER: ${{ inputs.pr_number }}
           INPUT_ISSUE: ${{ inputs.is_issue || 'false' }}
+          INPUT_MODE: ${{ inputs.mode || 'review' }}
+          INPUT_INSTRUCTION: ${{ inputs.instruction }}
           INPUT_UPSTREAM: ${{ inputs.upstream_repo || vars.UPSTREAM_REPO }}
         run: |
           set -euo pipefail
@@ -524,7 +690,9 @@ jobs:
               --arg number "$INPUT_NUMBER" \
               --arg is_issue "$INPUT_ISSUE" \
               --arg repo_url "$INPUT_UPSTREAM" \
-              '{provider: $provider, repo: $repo, pr_number: ($number | tonumber? // 0), is_issue: ($is_issue == "true"), repo_url: $repo_url}' \
+              --arg mode "$INPUT_MODE" \
+              --arg instruction "$INPUT_INSTRUCTION" \
+              '{provider: $provider, repo: $repo, pr_number: ($number | tonumber? // 0), is_issue: ($is_issue == "true"), repo_url: $repo_url, mode: $mode, instruction: $instruction}' \
               > /tmp/task.json
             TASK_FILE=""
           else
@@ -557,6 +725,9 @@ jobs:
           echo "pr_number=$(jq -r '.pr_number' /tmp/task.json)" >> "$GITHUB_OUTPUT"
           echo "is_issue=$(jq -r '.is_issue' /tmp/task.json)" >> "$GITHUB_OUTPUT"
           echo "upstream_repo=$UPSTREAM" >> "$GITHUB_OUTPUT"
+          # 旧任务 JSON 没有 mode 字段，一律按 review 处理，保证向后兼容
+          echo "mode=$(jq -r '.mode // "review"' /tmp/task.json)" >> "$GITHUB_OUTPUT"
+          echo "instruction=$(jq -r '.instruction // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
           echo "title=$(jq -r '.title // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
           echo "html_url=$(jq -r '.html_url // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
           echo "user=$(jq -r '.user // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
@@ -631,6 +802,8 @@ jobs:
           PR_NUMBER: ${{ steps.task.outputs.pr_number }}
           IS_ISSUE: ${{ steps.task.outputs.is_issue }}
           PROVIDER: ${{ steps.task.outputs.provider }}
+          MODE: ${{ steps.task.outputs.mode }}
+          INSTRUCTION: ${{ steps.task.outputs.instruction }}
           TITLE: ${{ steps.task.outputs.title }}
           HTML_URL: ${{ steps.task.outputs.html_url }}
           USER: ${{ steps.task.outputs.user }}
@@ -687,15 +860,21 @@ jobs:
   再 POST 换安装令牌；Gitee 侧没有换发接口，只探测 `GITEE_APP_TOKEN` 是否有效。
   两条路径任一步失败都落到 `PAT_TOKEN`，不会让整个 job 挂掉，因此该步骤**不需要 `continue-on-error`**。
   换到的令牌交给 agent 用于 `git clone` **与**回写评论，两边身份一致。
-- **手动补跑**：`workflow_dispatch` 可直接填上游仓库 URL、目标仓库、PR 号跑一次，
-  适合在新仓库接入时先验证链路；`AGENT_CONFIG` / `AGENT_NAME` 用仓库变量控制跑哪个 agent。
+- **手动补跑**：`workflow_dispatch` 可直接填上游仓库 URL、目标仓库、PR 号、`mode` 与
+  `instruction` 跑一次，适合在新仓库接入时先验证链路；`AGENT_CONFIG` / `AGENT_NAME`
+  用仓库变量控制跑哪个 agent。
+- **模式透传**：任务 JSON 的 `mode` / `instruction` 由 `Read task payload` 步骤读出，
+  分别写进 `MODE` / `INSTRUCTION` 环境变量给 agent；旧 JSON 缺 `mode` 时按 `review` 兜底。
 
 ---
 
 ## 模块三：AI Agent（Python，基于 OpenAI Agents SDK）
 
-重构后的 agent 只做一件事：**把待审查的仓库克隆到 `/tmp` 的子目录，然后在仓库里跑一个「只有 bash」的 agent**。
+重构后的 agent 只做一件事：**把目标仓库克隆到 `/tmp` 的子目录，然后在仓库里跑一个「只有 bash」的 agent**。
 模型自己用 `git` / `rg` / `sed` 去读代码，不需要我们再为「看 diff」「读文件」写 API 工具。
+
+`mode` 决定用哪份提示词（`prompt-review.txt` / `prompt-work.txt`），并决定模型能不能改仓库：
+`review` 禁止 `git commit/push`，`work` 放开写权限。除提示词外两条链路完全一致。
 
 ### 目录与职责
 
@@ -704,7 +883,7 @@ agent/
 ├── requirements.txt          # openai-agents + cryptography
 └── src/
     ├── review.py             # 入口：取配置 → 完整克隆上游仓库 → 跑 agent → 回写评论
-    ├── config.py             # 读 agents/config.json + prompt.txt，校验 tools / workdir
+    ├── config.py             # 读 agents/config.json + 按模式选提示词，校验 tools / workdir
     ├── task_context.py       # 任务 JSON / 环境变量 → 给模型的首条消息
     ├── agent_runner.py       # 组装 Agent（chat/completions 兼容网关）并运行
     ├── repo.py               # 完整克隆到 /tmp 子目录、检出 head、URL 脱敏、环境变量清洗
@@ -712,7 +891,8 @@ agent/
     ├── app_auth.py           # App 身份优先、PAT 回退的 TokenProvider（沿用）
     └── agents/
         ├── config.json       # agent 配置（运行时读；仓库里放 config.example.json）
-        ├── prompt.txt        # 系统提示词，纯文本，随便改
+        ├── prompt-review.txt # review 模式的系统提示词，纯文本，随便改
+        ├── prompt-work.txt   # work 模式的系统提示词（允许 commit/push）
         └── task.example.json # 任务 JSON 字段示例
 ```
 
@@ -724,7 +904,8 @@ agent/
 | 完整克隆（不浅克隆） | `git clone --no-single-branch`：全量历史 + 所有分支的 remote ref，`git log`/`git blame`/跨提交 diff 都能用 |
 | 限制工作目录在仓库内 | `bash` 工具的 `cwd` 钉在仓库根 + `sanitize_env` 把 `HOME`/`PWD` 也指过去 |
 | 只给 bash 工具 | `tools.py` 只实现一个 `bash` function tool，`config.json` 里 `tools: ["bash"]` |
-| 系统提示词单独成 txt | `agents/prompt.txt`，模型读的是这个文件的内容 |
+| 系统提示词单独成 txt | `agents/prompt-review.txt` / `agents/prompt-work.txt`，按 `mode` 选，模型读的是文件内容 |
+| 两种模式共用一条链路 | `MODE` 环境变量 → `config.load_agent_config(mode=…)` 选提示词，`task_context.build_prompt()` 把 work 的要求写进首条消息 |
 | 其他 agent 设置成 json | `agents/config.json`，改完直接生效，不生成任何脚本 |
 | CI 需要上游仓库 URL | workflow 传 `UPSTREAM_REPO`（仓库变量/手动输入/任务 JSON 三级兜底），`review.py` 自己 clone |
 
@@ -734,7 +915,8 @@ agent/
 {
   "reviewer": {
     "name": "code-reviewer",
-    "prompt_file": "prompt.txt",
+    "prompt_file_review": "prompt-review.txt",
+    "prompt_file_work": "prompt-work.txt",
     "model": "gpt-4o-mini",
     "temperature": 0.2,
     "max_turns": 20,
@@ -749,6 +931,11 @@ agent/
 ```
 
 - 顶层每个 key 是一个 agent 角色；`AGENT_NAME` 决定这次跑哪一个（不填取排序后第一个）。
+- 提示词按模式分开配（TXT 文件由用户自行编写）：
+  - `prompt_file_review` / `prompt_file_work` 显式指定；不填则按约定名
+    `prompt-review.txt` / `prompt-work.txt` 自动查找；都没有时回退 `prompt_file`（默认 `prompt.txt`）。
+    也就是说**老仓库只放一份 `prompt.txt` 也能继续跑**，两种模式共用它。
+  - 这次运行用哪份由任务 JSON 的 `mode` 决定（CI 通过 `MODE` 环境变量传进来）。
 - `prompt_file` 相对配置文件目录解析（也支持相对仓库根或绝对路径），内容就是系统提示词。
 - `workdir` 必须落在仓库目录内，配到仓库外会直接报错退出。
 - `tools` 目前只认 `bash`；写未知工具名会在启动时报错，不会静默忽略。
@@ -781,9 +968,12 @@ agent/
 
 1. `review.py` 读任务上下文（环境变量优先，其次 `/tmp/task.json`）；
 2. 换令牌 → **完整克隆**上游仓库到 `/tmp/repo-xxxx`，再 `git checkout` 到待审查的 head；
-3. 读克隆出来的仓库里的 `agents/config.json` 与 `agents/prompt.txt`（路径可用 `AGENT_CONFIG` 调整）；
+3. 读克隆出来的仓库里的 `agents/config.json`，并按 `MODE` 选 `prompt-review.txt` / `prompt-work.txt`（路径可用 `AGENT_CONFIG` 调整）；
 4. 组装 agent（`bash` 工具 + 系统提示词 + 首条任务消息），跑 `Runner.run()`；
-5. 把最终正文作为评论回写目标仓库；任何环节失败都会回写「审查失败」评论，不会静默丢任务。
+5. 把最终正文作为评论回写目标仓库（`review` 标题是「AI 代码审查」，`work` 是「AI 执行结果」）；
+   任何环节失败都会回写失败评论，不会静默丢任务。
+6. `work` 模式额外多两步：提示词允许模型改代码并 `git commit/push`，克隆时按分支而非 sha 准备，
+   推回的是触发评论所在 PR 的源分支。
 
 ### 环境变量
 
@@ -797,6 +987,8 @@ CI 侧注入，脚本侧只读（真正必填的只有三个上游/模型相关�
 | `AI_MODEL` | ❌ | 模型名，默认 `gpt-4o-mini` |
 | `AGENT_CONFIG` | ❌ | 配置文件路径（相对克隆出来的仓库），默认 `agents/config.json` |
 | `AGENT_NAME` | ❌ | 跑配置里的哪个 agent，默认排序后第一个 |
+| `MODE` | ❌ | 执行模式 `review` / `work`，默认 `review`；决定用哪份提示词 |
+| `INSTRUCTION` | ❌ | `work` 模式的自然语言要求，会写进模型首条消息 |
 | `TARGET_REPO` / `PR_NUMBER` / `IS_ISSUE` / `PROVIDER` | ❌ | 回写评论用；`PROVIDER` 决定 API 基址与鉴权方式 |
 | `TITLE` / `BODY` / `HTML_URL` / `USER` | ❌ | PR/Issue 元数据，进模型首条消息 |
 | `BASE_SHA` / `HEAD_SHA` / `BASE_REF` / `HEAD_REF` | ❌ | 有 sha 时按 sha 浅拉取，只有分支名时按分支克隆 |
@@ -833,13 +1025,32 @@ CI 侧注入，脚本侧只读（真正必填的只有三个上游/模型相关�
 }
 ```
 
-`repo_url` 是这次重构新增的字段（上游仓库地址）；没有它时 CI 会按 `provider + repo`
-拼默认地址，也可以直接用仓库变量 `UPSTREAM_REPO` 覆盖。
+`repo_url` 是上游仓库地址（没有它时 CI 会按 `provider + repo` 拼默认地址，
+也可以用仓库变量 `UPSTREAM_REPO` 覆盖）。
+
+`mode` / `instruction` 是执行模式相关字段：
+
+- `mode`：`review`（只评审）或 `work`（按描述干活）。旧任务 JSON 没有这个字段，CI 一律按 `review` 处理。
+- `instruction`：`work` 模式下的自然语言要求，取自 `@BOT_NAME work ` 之后的原文；`review` 模式为空串。
+
+work 模式的任务里 `body` 是触发它的**评论正文**（不是 PR 描述），方便 Agent 看到完整上下文。
+
+### 触发规则与模式
+
+- PR 开启类事件 → 默认 `review`；描述里 @ 了机器人 → 按 @ 出来的模式。
+- Issue 开启 → 默认**丢弃**；描述里 @ 了机器人 → 按 @ 出来的模式。
+- 评论事件（GitHub `issue_comment` / Gitee `note`）→ 必须 `@BOT_NAME ` 且后面跟 `review` / `work`，否则丢弃。
+- 写法：`@your-app review`、`@your-app work 把 README 里的链接改成 https://…`（后面直接写自然语言，不用引号）。
+- 需要在 GitHub / Gitee 的 Webhook 里勾选 **Issue comment / Note** 事件，评论链路才会进来。
 
 `agent/src/review.py`（入口，完整代码）：
 
 ```python
-"""AI 审查入口：解析配置 → 完整克隆上游仓库到 /tmp → 在仓库内跑 bash agent → 回写评论。
+"""AI 执行入口：解析配置 → 完整克隆上游仓库到 /tmp → 在仓库内跑 bash agent → 回写评论。
+
+两种模式共用这一条链路，由任务 JSON 的 `mode` 决定行为与提示词：
+- `review`：只评审，禁止改仓库（默认）；
+- `work`：按评论里的自然语言要求干活，提示词里明确允许 `git commit` / `git push`。
 
 工作流（CI）只需要传两个东西：**上游仓库 URL**（UPSTREAM_REPO）与任务 JSON
 （PR/Issue 元数据）。代码由脚本自己 `git clone` 到 /tmp 的子目录，
@@ -872,6 +1083,8 @@ from task_context import build_context, build_prompt
 from tools import ShellContext
 
 COMMENT_MARKER = "<!-- ai-review-agent -->"
+# 评论标题按模式区分，同一 PR 上 review / work 的产出一眼能分清
+TITLES = {"review": "## 🤖 AI 代码审查", "work": "## 🤖 AI 执行结果"}
 # 克隆根目录：所有仓库都放在 /tmp 的子目录下，跑完即随容器销毁
 CLONE_ROOT = os.environ.get("CLONE_ROOT", "/tmp")
 
@@ -914,6 +1127,11 @@ def main() -> int:
     is_issue = ctx["is_issue"]
     number = int(ctx["pr_number"] or 0)
     repo = ctx["repo"]
+    mode = (ctx.get("mode") or "review").lower()
+    if mode not in TITLES:
+        mode = "review"
+    title = TITLES[mode]
+    print(f"[review] 执行模式：{mode}")
 
     provider_client: TokenProvider = build_token_provider(provider)
 
@@ -928,7 +1146,7 @@ def main() -> int:
 
     def fail(reason: str) -> int:
         body = (
-            f"{COMMENT_MARKER}\n## 🤖 AI 代码审查失败\n\n"
+            f"{COMMENT_MARKER}\n{title}失败\n\n"
             f"{reason}\n\n请检查上游仓库 URL、仓库权限与 Actions 日志。"
         )
         print(f"[review] {reason}")
@@ -941,6 +1159,8 @@ def main() -> int:
 
     # 1) 完整克隆上游仓库到 /tmp 的子目录
     upstream = ctx["upstream_url"]
+    # work 模式要提交代码：评论触发时任务里没有 base/head sha，必须按分支克隆才能推回
+    branch_for_clone = "" if mode == "work" else ctx["head_ref"]
     print(f"[review] 完整克隆上游仓库：{mask_url(upstream)} → {CLONE_ROOT}")
     try:
         # 完整克隆（全量历史、全部分支），之后再把工作区切到待审查的 head
@@ -948,22 +1168,26 @@ def main() -> int:
             url=upstream,
             token=token,
             provider=provider,
-            branch=ctx["head_ref"],
+            branch=branch_for_clone,
             base_sha=ctx["base_sha"],
             head_sha=ctx["head_sha"],
             workdir=CLONE_ROOT,
         )
-        checkout_head(repo_dir, ctx["head_sha"], ctx["head_ref"])
+        # work 模式留在克隆出来的默认分支上（要推回源分支）；其余按 head_sha 精确检出
+        if mode == "work":
+            checkout_head(repo_dir, "", ctx["head_ref"])
+        else:
+            checkout_head(repo_dir, ctx["head_sha"], ctx["head_ref"])
     except RepoError as err:
         return fail(f"克隆上游仓库失败：`{err}`")
 
-    # 2) 读配置（config.json + prompt.txt），工作目录锁在仓库内
+    # 2) 读配置（config.json + 按模式选提示词），工作目录锁在仓库内
     try:
-        cfg = load_agent_config(repo_dir)
+        cfg = load_agent_config(repo_dir, mode=mode)
         workspace = cfg.resolve_workdir(repo_dir)
     except ConfigError as err:
         return fail(f"agent 配置不可用：`{err}`")
-    print(f"[review] agent={cfg.name} 工作目录={workspace}")
+    print(f"[review] agent={cfg.name} 模式={cfg.mode} 工作目录={workspace}")
     print(f"[review] 系统提示词：{cfg.prompt_file}（{len(cfg.instructions)} 字符）")
 
     # 3) 跑 agent：只给 bash，环境变量剔掉凭据
@@ -978,11 +1202,11 @@ def main() -> int:
 
     try:
         result = run_agent(cfg, shell, build_prompt(ctx), workspace)
-        body = f"{COMMENT_MARKER}\n## 🤖 AI 代码审查\n\n{result}"
+        body = f"{COMMENT_MARKER}\n{title}\n\n{result}"
     except (AgentRunError, Exception) as err:  # noqa: BLE001 - 任何异常都要回报到 PR
         traceback.print_exc()
         body = (
-            f"{COMMENT_MARKER}\n## 🤖 AI 代码审查失败\n\n"
+            f"{COMMENT_MARKER}\n{title}失败\n\n"
             f"任务执行异常：`{type(err).__name__}: {err}`\n\n"
             "请检查 Actions 日志与环境变量配置。"
         )
@@ -1106,6 +1330,8 @@ DEFAULT_CONFIG_PATH = "agents/config.json"
 DEFAULT_EXAMPLE_PATH = "agents/config.example.json"
 DEFAULT_PROMPT_PATH = "agents/prompt.txt"
 DEFAULT_TOOL = "bash"
+# 两种执行模式各有默认提示词文件，用户放哪个都行：优先按模式取名，找不到再回退 prompt.txt
+DEFAULT_PROMPT_BY_MODE = {"review": "prompt-review.txt", "work": "prompt-work.txt"}
 
 # 未知 tool 名要在启动时直接报错，避免"配了但没生效"这种静默失败
 KNOWN_TOOLS = {"bash"}
@@ -1122,6 +1348,8 @@ class AgentConfig:
     name: str
     instructions: str
     prompt_file: str
+    # 本次运行的模式（review / work），进模型首条消息，也给 work 模式决定要不要放开写权限
+    mode: str = "review"
     model: str = ""
     temperature: float = 0.2
     max_turns: int = 20
@@ -1172,18 +1400,54 @@ def _pick_agent(raw: dict, agent_name: str) -> tuple[str, dict]:
     return first, raw[first]
 
 
-def _resolve_prompt(prompt_file: str, config_dir: Path, repo_root: Path) -> Path:
+def _resolve_prompt(prompt_file: str, config_dir: Path, repo_root: Path, required: bool = True) -> Path | None:
     """prompt 路径支持相对配置文件目录、相对仓库根、或绝对路径。"""
     path = Path(prompt_file)
     candidates = [path] if path.is_absolute() else [config_dir / path, repo_root / path]
     for candidate in candidates:
         if candidate.is_file():
             return candidate
+    if not required:
+        return None
     raise ConfigError(f"找不到系统提示词文件：{prompt_file}（已尝试 {', '.join(str(c) for c in candidates)}）")
 
 
-def load_agent_config(repo_root: Path, config_path: str = "", agent_name: str = "") -> AgentConfig:
-    """从磁盘读配置；缺配置时给出可照抄的示例路径，而不是含糊的报错。"""
+def _resolve_mode_prompt(mode: str, entry: dict, config_dir: Path, repo_root: Path) -> Path:
+    """按模式选提示词：`prompt_file_review` / `prompt_file_work` > 按模式约定名 > prompt_file。
+
+    用户只配了 `prompt.txt` 时两种模式共用它，老仓库不用改就能继续跑。
+    """
+    explicit = str(entry.get(f"prompt_file_{mode}") or "")
+    if explicit:
+        found = _resolve_prompt(explicit, config_dir, repo_root)
+        assert found is not None
+        return found
+
+    for name in (DEFAULT_PROMPT_BY_MODE.get(mode, ""),):
+        if not name:
+            break
+        found = _resolve_prompt(name, config_dir, repo_root, required=False)
+        if found:
+            return found
+
+    return _resolve_prompt(str(entry.get("prompt_file") or DEFAULT_PROMPT_PATH), config_dir, repo_root)  # type: ignore[return-value]
+
+
+def load_agent_config(
+    repo_root: Path,
+    config_path: str = "",
+    agent_name: str = "",
+    mode: str = "",
+) -> AgentConfig:
+    """从磁盘读配置；缺配置时给出可照抄的示例路径，而不是含糊的报错。
+
+    mode 决定用哪份提示词（review / work），也决定 work 模式是否放开写权限；
+    缺省从环境变量 MODE 读，再缺省按 review。
+    """
+    mode = (mode or os.environ.get("MODE", "") or "review").strip().lower()
+    if mode not in DEFAULT_PROMPT_BY_MODE:
+        raise ConfigError(f"不支持的模式：{mode}（可用：review / work）")
+
     raw_path = config_path or os.environ.get("AGENT_CONFIG", DEFAULT_CONFIG_PATH)
     path = Path(raw_path)
     if not path.is_absolute():
@@ -1199,8 +1463,7 @@ def load_agent_config(repo_root: Path, config_path: str = "", agent_name: str = 
     if not isinstance(entry, dict):
         raise ConfigError(f"agent {key} 的配置必须是 JSON 对象")
 
-    prompt_file = str(entry.get("prompt_file") or DEFAULT_PROMPT_PATH)
-    prompt_path = _resolve_prompt(prompt_file, path.parent, repo_root)
+    prompt_path = _resolve_mode_prompt(mode, entry, path.parent, repo_root)
     instructions = prompt_path.read_text(encoding="utf-8")
 
     tools = entry.get("tools") or [DEFAULT_TOOL]
@@ -1220,6 +1483,7 @@ def load_agent_config(repo_root: Path, config_path: str = "", agent_name: str = 
         name=str(entry.get("name") or key),
         instructions=instructions,
         prompt_file=str(prompt_path),
+        mode=mode,
         model=str(entry.get("model") or ""),
         temperature=float(entry.get("temperature", 0.2)),
         max_turns=int(entry.get("max_turns", 20)),
@@ -1264,12 +1528,17 @@ def load_agent_config(repo_root: Path, config_path: str = "", agent_name: str = 
 13. **配置写错要吵**：未知 tool 名、找不到 `config.json` / `prompt.txt`、JSON 语法错误都会直接失败并回写评论，
     不会静默降级——否则「配了没生效」比跑挂更难查。
 14. **失败必回写**：克隆失败、配置错误、模型异常都会转成一条「审查失败」评论，不会静默丢任务。
+15. **`work` 模式会写仓库**：它的提示词明确允许 `git add/commit/push`，推的是触发评论所在 PR 的源分支；
+    只读评审请走 `review`。`BOT_NAME` 必须配准，否则任何 `@xxx` 都会被当成触发词，
+    等于把"谁能驱动机器人改代码"放开了。
+16. **评论触发要防自激**：机器人的回复里若带上 `@BOT_NAME work` 之类字样会再次触发自己。
+    提示词里已要求不要复述触发词，接入新机器人时记得回归验证一次。
 
 ## 二次开发约定
 
 改动 `worker/src/index.ts`、`agent/src` 或 `control-repo/.github/workflows/ai-review.yml` 时，README 里内嵌的
 对应代码块必须同步更新——文档与代码不一致会直接误导部署者。
-（`worker/src/app-auth.ts` 与 `worker/src/env.ts` 没有内嵌代码块，改动它们只需同步本节与 Secrets 表。）可以用一段脚本自查：
+（`worker/src/app-auth.ts`、`worker/src/env.ts`、`worker/src/mode.ts` 没有内嵌代码块，改动它们只需同步本节与 Secrets 表。）可以用一段脚本自查：
 
 ```bash
 python - <<'PY'
@@ -1292,8 +1561,9 @@ PY
 ## 本地验证
 
 ```bash
-# Worker 类型检查（依赖装在根目录）
+# Worker 类型检查 + Worker 单测（触发规则 / @模式识别，不联网）
 npm install && npx tsc --noEmit
+npm test
 
 # Agent 依赖与语法（openai-agents 提供工具调用循环，cryptography 用于 App 私钥签 JWT）
 pip install -r agent/requirements.txt && python -m py_compile agent/src/*.py
@@ -1313,6 +1583,12 @@ git init /tmp/upstream && (cd /tmp/upstream && echo hi > a.txt && \
   git add -A && git -c user.email=a@b.c -c user.name=a commit -qm init)
 
 UPSTREAM_REPO=/tmp/upstream GITHUB_TOKEN=dummy AI_API_KEY=dummy \
+AI_API_BASE=http://127.0.0.1:8000/v1 TARGET_REPO=x/y PR_NUMBER=1 \
+  python agent/src/review.py
+
+# 想验 work 模式：加 MODE=work 与 INSTRUCTION，注意提示词要换成 prompt-work.txt
+UPSTREAM_REPO=/tmp/upstream GITHUB_TOKEN=dummy AI_API_KEY=dummy \
+MODE=work INSTRUCTION='把 a.txt 的内容改成 hello' \
 AI_API_BASE=http://127.0.0.1:8000/v1 TARGET_REPO=x/y PR_NUMBER=1 \
   python agent/src/review.py
 ```

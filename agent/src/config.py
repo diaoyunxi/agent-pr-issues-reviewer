@@ -14,6 +14,8 @@ DEFAULT_CONFIG_PATH = "agents/config.json"
 DEFAULT_EXAMPLE_PATH = "agents/config.example.json"
 DEFAULT_PROMPT_PATH = "agents/prompt.txt"
 DEFAULT_TOOL = "bash"
+# 两种执行模式各有默认提示词文件，用户放哪个都行：优先按模式取名，找不到再回退 prompt.txt
+DEFAULT_PROMPT_BY_MODE = {"review": "prompt-review.txt", "work": "prompt-work.txt"}
 
 # 未知 tool 名要在启动时直接报错，避免"配了但没生效"这种静默失败
 KNOWN_TOOLS = {"bash"}
@@ -30,6 +32,8 @@ class AgentConfig:
     name: str
     instructions: str
     prompt_file: str
+    # 本次运行的模式（review / work），进模型首条消息，也给 work 模式决定要不要放开写权限
+    mode: str = "review"
     model: str = ""
     temperature: float = 0.2
     max_turns: int = 20
@@ -80,18 +84,54 @@ def _pick_agent(raw: dict, agent_name: str) -> tuple[str, dict]:
     return first, raw[first]
 
 
-def _resolve_prompt(prompt_file: str, config_dir: Path, repo_root: Path) -> Path:
+def _resolve_prompt(prompt_file: str, config_dir: Path, repo_root: Path, required: bool = True) -> Path | None:
     """prompt 路径支持相对配置文件目录、相对仓库根、或绝对路径。"""
     path = Path(prompt_file)
     candidates = [path] if path.is_absolute() else [config_dir / path, repo_root / path]
     for candidate in candidates:
         if candidate.is_file():
             return candidate
+    if not required:
+        return None
     raise ConfigError(f"找不到系统提示词文件：{prompt_file}（已尝试 {', '.join(str(c) for c in candidates)}）")
 
 
-def load_agent_config(repo_root: Path, config_path: str = "", agent_name: str = "") -> AgentConfig:
-    """从磁盘读配置；缺配置时给出可照抄的示例路径，而不是含糊的报错。"""
+def _resolve_mode_prompt(mode: str, entry: dict, config_dir: Path, repo_root: Path) -> Path:
+    """按模式选提示词：`prompt_file_review` / `prompt_file_work` > 按模式约定名 > prompt_file。
+
+    用户只配了 `prompt.txt` 时两种模式共用它，老仓库不用改就能继续跑。
+    """
+    explicit = str(entry.get(f"prompt_file_{mode}") or "")
+    if explicit:
+        found = _resolve_prompt(explicit, config_dir, repo_root)
+        assert found is not None
+        return found
+
+    for name in (DEFAULT_PROMPT_BY_MODE.get(mode, ""),):
+        if not name:
+            break
+        found = _resolve_prompt(name, config_dir, repo_root, required=False)
+        if found:
+            return found
+
+    return _resolve_prompt(str(entry.get("prompt_file") or DEFAULT_PROMPT_PATH), config_dir, repo_root)  # type: ignore[return-value]
+
+
+def load_agent_config(
+    repo_root: Path,
+    config_path: str = "",
+    agent_name: str = "",
+    mode: str = "",
+) -> AgentConfig:
+    """从磁盘读配置；缺配置时给出可照抄的示例路径，而不是含糊的报错。
+
+    mode 决定用哪份提示词（review / work），也决定 work 模式是否放开写权限；
+    缺省从环境变量 MODE 读，再缺省按 review。
+    """
+    mode = (mode or os.environ.get("MODE", "") or "review").strip().lower()
+    if mode not in DEFAULT_PROMPT_BY_MODE:
+        raise ConfigError(f"不支持的模式：{mode}（可用：review / work）")
+
     raw_path = config_path or os.environ.get("AGENT_CONFIG", DEFAULT_CONFIG_PATH)
     path = Path(raw_path)
     if not path.is_absolute():
@@ -107,8 +147,7 @@ def load_agent_config(repo_root: Path, config_path: str = "", agent_name: str = 
     if not isinstance(entry, dict):
         raise ConfigError(f"agent {key} 的配置必须是 JSON 对象")
 
-    prompt_file = str(entry.get("prompt_file") or DEFAULT_PROMPT_PATH)
-    prompt_path = _resolve_prompt(prompt_file, path.parent, repo_root)
+    prompt_path = _resolve_mode_prompt(mode, entry, path.parent, repo_root)
     instructions = prompt_path.read_text(encoding="utf-8")
 
     tools = entry.get("tools") or [DEFAULT_TOOL]
@@ -128,6 +167,7 @@ def load_agent_config(repo_root: Path, config_path: str = "", agent_name: str = 
         name=str(entry.get("name") or key),
         instructions=instructions,
         prompt_file=str(prompt_path),
+        mode=mode,
         model=str(entry.get("model") or ""),
         temperature=float(entry.get("temperature", 0.2)),
         max_turns=int(entry.get("max_turns", 20)),

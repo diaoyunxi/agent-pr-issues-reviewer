@@ -10,6 +10,8 @@ from pathlib import Path
 
 # 描述里经常贴日志/长文，做一次截断，避免第一轮就把上下文撑爆
 MAX_BODY_CHARS = 4_000
+# work 模式的要求是原文，尽量别截断
+MAX_INSTRUCTION_CHARS = 8_000
 
 TASK_FILE_HINT = Path("/tmp/task.json")
 
@@ -58,6 +60,9 @@ def build_context() -> dict:
         "url": pick("HTML_URL", "URL", default=""),
         "user": pick("USER", "AUTHOR", default=""),
         "action": pick("ACTION", default=""),
+        # 执行模式与 work 的自然语言要求
+        "mode": (pick("MODE", default="review") or "review").lower(),
+        "instruction": pick("INSTRUCTION", default=""),
         "base_sha": pick("BASE_SHA", default=""),
         "head_sha": pick("HEAD_SHA", default=""),
         "base_ref": pick("BASE_REF", default=""),
@@ -67,19 +72,35 @@ def build_context() -> dict:
 
 
 def build_prompt(ctx: dict) -> str:
-    """拼首条 user 消息：任务描述 + 明确的"先看 diff"指引。"""
+    """拼首条 user 消息：任务描述 + 明确的"先看 diff"指引；work 模式先讲清要做什么。"""
     kind = "Issue" if ctx["is_issue"] else "Pull Request"
+    mode = (ctx.get("mode") or "review").lower()
+    instruction = (ctx.get("instruction") or "").strip()
+    if len(instruction) > MAX_INSTRUCTION_CHARS:
+        instruction = f"{instruction[:MAX_INSTRUCTION_CHARS]}\n…（要求过长已截断）"
     body = (ctx["body"] or "").strip()
     if len(body) > MAX_BODY_CHARS:
         body = f"{body[:MAX_BODY_CHARS]}\n…（描述过长已截断）"
     body = body or "（无描述）"
 
-    lines = [
-        f"请审查 {ctx['provider']} 仓库 {ctx['repo'] or '(未知)'} 的 {kind} #{ctx['pr_number'] or '?'}。",
-        "",
-        f"- 标题：{ctx['title'] or '(无标题)'}",
-        f"- 发起人：{ctx['user'] or '(未知)'}",
-    ]
+    if mode == "work":
+        lines = [
+            f"请按要求处理 {ctx['provider']} 仓库 {ctx['repo'] or '(未知)'} 的 {kind} #{ctx['pr_number'] or '?'}。",
+            "",
+            f"- 标题：{ctx['title'] or '(无标题)'}",
+            f"- 发起人：{ctx['user'] or '(未知)'}",
+            "",
+            "用户的要求：",
+            instruction or "（评论里没有给出额外描述，请依据标题与正文自行判断）",
+            "",
+        ]
+    else:
+        lines = [
+            f"请审查 {ctx['provider']} 仓库 {ctx['repo'] or '(未知)'} 的 {kind} #{ctx['pr_number'] or '?'}。",
+            "",
+            f"- 标题：{ctx['title'] or '(无标题)'}",
+            f"- 发起人：{ctx['user'] or '(未知)'}",
+        ]
     if ctx["url"]:
         lines.append(f"- 链接：{ctx['url']}")
     if ctx["head_ref"] or ctx["base_ref"]:
@@ -96,7 +117,10 @@ def build_prompt(ctx: dict) -> str:
     ]
 
     if ctx["is_issue"]:
-        lines.append("这是一条 Issue：没有 diff 可看，请判断描述是否清晰、是否缺信息，需要时给出实现建议。")
+        if mode == "work":
+            lines.append("这是一条 Issue 上的评论任务：没有 diff 可看，按上面的要求处理。")
+        else:
+            lines.append("这是一条 Issue：没有 diff 可看，请判断描述是否清晰、是否缺信息，需要时给出实现建议。")
     elif ctx["base_sha"] and ctx["head_sha"]:
         lines.append(
             f"本次改动：`git diff {ctx['base_sha'][:12]} {ctx['head_sha'][:12]}`"

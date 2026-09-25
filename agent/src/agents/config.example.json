@@ -1,7 +1,8 @@
 {
   "reviewer": {
     "name": "code-reviewer",
-    "prompt_file": "prompt.txt",
+    "prompt_file_review": "prompt-review.txt",
+    "prompt_file_work": "prompt-work.txt",
     "model": "gpt-4o-mini",
     "temperature": 0.2,
     "max_turns": 20,

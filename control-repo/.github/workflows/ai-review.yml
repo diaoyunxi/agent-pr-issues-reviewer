@@ -28,6 +28,13 @@ on:
         description: '是否是 Issue（true/false）'
         required: false
         default: 'false'
+      mode:
+        description: '执行模式：review（只评审）/ work（按 instruction 干活）'
+        required: false
+        default: 'review'
+      instruction:
+        description: 'work 模式的自然语言要求'
+        required: false
 
 # 同一 PR 的多次提交只保留最新一次审查，旧任务直接被取消
 concurrency:
@@ -63,6 +70,8 @@ jobs:
           INPUT_REPO: ${{ inputs.target_repo }}
           INPUT_NUMBER: ${{ inputs.pr_number }}
           INPUT_ISSUE: ${{ inputs.is_issue || 'false' }}
+          INPUT_MODE: ${{ inputs.mode || 'review' }}
+          INPUT_INSTRUCTION: ${{ inputs.instruction }}
           INPUT_UPSTREAM: ${{ inputs.upstream_repo || vars.UPSTREAM_REPO }}
         run: |
           set -euo pipefail
@@ -78,7 +87,9 @@ jobs:
               --arg number "$INPUT_NUMBER" \
               --arg is_issue "$INPUT_ISSUE" \
               --arg repo_url "$INPUT_UPSTREAM" \
-              '{provider: $provider, repo: $repo, pr_number: ($number | tonumber? // 0), is_issue: ($is_issue == "true"), repo_url: $repo_url}' \
+              --arg mode "$INPUT_MODE" \
+              --arg instruction "$INPUT_INSTRUCTION" \
+              '{provider: $provider, repo: $repo, pr_number: ($number | tonumber? // 0), is_issue: ($is_issue == "true"), repo_url: $repo_url, mode: $mode, instruction: $instruction}' \
               > /tmp/task.json
             TASK_FILE=""
           else
@@ -111,6 +122,9 @@ jobs:
           echo "pr_number=$(jq -r '.pr_number' /tmp/task.json)" >> "$GITHUB_OUTPUT"
           echo "is_issue=$(jq -r '.is_issue' /tmp/task.json)" >> "$GITHUB_OUTPUT"
           echo "upstream_repo=$UPSTREAM" >> "$GITHUB_OUTPUT"
+          # 旧任务 JSON 没有 mode 字段，一律按 review 处理，保证向后兼容
+          echo "mode=$(jq -r '.mode // "review"' /tmp/task.json)" >> "$GITHUB_OUTPUT"
+          echo "instruction=$(jq -r '.instruction // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
           echo "title=$(jq -r '.title // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
           echo "html_url=$(jq -r '.html_url // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
           echo "user=$(jq -r '.user // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
@@ -185,6 +199,8 @@ jobs:
           PR_NUMBER: ${{ steps.task.outputs.pr_number }}
           IS_ISSUE: ${{ steps.task.outputs.is_issue }}
           PROVIDER: ${{ steps.task.outputs.provider }}
+          MODE: ${{ steps.task.outputs.mode }}
+          INSTRUCTION: ${{ steps.task.outputs.instruction }}
           TITLE: ${{ steps.task.outputs.title }}
           HTML_URL: ${{ steps.task.outputs.html_url }}
           USER: ${{ steps.task.outputs.user }}
