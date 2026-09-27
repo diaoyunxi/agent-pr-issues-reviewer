@@ -1,5 +1,5 @@
 # Cloudflare Workers 配置（放在仓库根目录，Cloudflare Git 集成可直接识别并自动部署）
-name = "agent-pr-reviewer"
+name = 'agent-pr-issues-reviewer'
 main = "worker/src/index.ts"
 compatibility_date = "2024-11-01"
 
@@ -15,6 +15,6 @@ compatibility_date = "2024-11-01"
 [vars]
 # CONTROL_REPO = 你 fork 后的仓库 owner/repo，Worker 把任务 JSON 推到这里，再由本仓库的 Actions 拉起 Agent。
 # 默认即本仓库名；如果你改过 fork 名，按实际填。
-CONTROL_REPO = "your-username/agent-pr-issues-reviewer"
+CONTROL_REPO = "diaoyunxi/agent-pr-issues-reviewer"
 
 # 非敏感的明文变量写在这里（会打进部署包，不要放令牌）：如 GITHUB_API / GITEE_API（自托管实例时用）。
