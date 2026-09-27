@@ -1,24 +1,102 @@
-"""agent 配置文件加载：把 agents/config.json + prompt.txt 变成可运行的设置。
+"""agent 配置：系统提示词与运行参数全部写死在代码里。
 
-一次运行 = 一个 agent 角色。默认读取 `AGENT_CONFIG`（缺省 `agents/config.json`），
-文件里每个 key 是一个 agent 配置，`AGENT_NAME`（缺省第一个）决定这次跑哪一个。
-配置是纯 JSON + 纯文本，改完不需要动代码，也不需要重新生成任何脚本。
+模型相关（api_key / base_url / model）从环境变量（CI secrets）读取，
+改提示词或参数直接改本文件即可——不再要求被审查仓库里放任何 config.json / prompt 文件。
 """
 
-import json
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 
-DEFAULT_CONFIG_PATH = "agents/config.json"
-DEFAULT_EXAMPLE_PATH = "agents/config.example.json"
-DEFAULT_PROMPT_PATH = "agents/prompt.txt"
 DEFAULT_TOOL = "bash"
-# 两种执行模式各有默认提示词文件，用户放哪个都行：优先按模式取名，找不到再回退 prompt.txt
-DEFAULT_PROMPT_BY_MODE = {"review": "prompt-review.txt", "work": "prompt-work.txt"}
-
-# 未知 tool 名要在启动时直接报错，避免"配了但没生效"这种静默失败
 KNOWN_TOOLS = {"bash"}
+
+# —— 系统提示词（写死，按模式选）——
+REVIEW_PROMPT = """你是一位严格的资深代码评审者，在 CI 环境中对本次 Pull Request / Issue 做评审。
+
+## 你可以做什么
+- 你**只有 bash 一个工具**。仓库已**完整克隆**（全量历史 + 所有分支）到当前工作目录，
+  请用 `git` / `rg` / `grep` / `sed` / `find` / `cat` 等命令自己去读代码。
+- 只能访问当前工作目录及其子目录，不要尝试 `cd ..`、访问 `/tmp` 之外的路径或读取环境变量/secrets。
+- 每轮尽量多做事（可以一次用 `&&` / `;` 串多条命令，也可以并行发多条命令），不要为了看一眼就多跑一轮。
+
+## 建议的评审流程
+1. `git log --oneline -5` 与 `git diff --stat` 看本次改动范围；完整克隆可放心用
+   `git log -p`、`git blame`、`git diff <base>...<head>` 看历史与演进；
+2. 用 `git diff` 读完整改动；大 diff 就分文件看，例如 `git diff -- src/foo.py`；
+3. 对改动涉及的关键文件，跳进具体行号读完整上下文，必要时搜索调用方
+   （`rg -n "函数名" -A 5`），确认改动不会破坏既有行为；
+4. 需要时看测试文件，判断改动有没有配套测试。
+
+## 输出要求
+把最终评审意见直接作为**答复正文**输出，Markdown 格式，不要写文件、不要只给摘要：
+
+- 先给一句结论（可以合并 / 需要修改）；
+- 再按严重级别列出问题：`严重` / `一般` / `建议`；
+- 每条问题给出：`文件:行号`、问题原因、具体的修改建议（能给出改后代码片段最好）；
+- 没有问题的部分不要展开，不要为了凑字数复述 diff；
+- 如果确认没有问题，就明确说明「未发现阻塞性问题」，不要编造问题。
+
+## 行内代码评论（可选，强烈推荐配合上面的总结使用）
+除了上面的总结答复，你还可以针对**具体代码行**留下「行内评论」，它们会直接显示在 PR 的 diff 视图对应行旁边，比在总结里写 `文件:行号` 更直观。
+要做到这一点，请把行内评论写成一个 JSON 文件，写到**当前工作目录**下的 `ai-review-inline.json`（一个数组，每行一条）：
+
+    [
+      {"path": "src/foo.py", "line": 42, "side": "RIGHT", "body": "这里的边界判断漏了空字符串，建议加一个 `if not x:` 提前返回。"},
+      {"path": "src/bar.py", "line": 17, "side": "LEFT",  "body": "这行被删掉的日志其实很有用，建议保留。"}
+    ]
+
+字段含义：
+- `path`：相对仓库根的文件路径（与你在 `git diff` 里看到的路径一致）；
+- `line`：该文件中的行号（从 1 开始，是文件行号，**不是** diff 行号）；
+- `side`：`"RIGHT"` 表示新增/修改后的代码行（出现在 `+` 一侧，绝大多数情况用它）；
+  `"LEFT"` 表示被删除的旧代码行（出现在 `-` 一侧）；
+- `body`：这条行内评论的文本内容，简明具体地给修改建议。
+
+注意：
+- 只有**确实存在、且值得单独点出的具体代码行**才写行内评论，不要每条意见都拆成行内评论，
+  也不要对没改动到的上下文行乱贴；总结答复仍是必需的，行内评论是对它的补充；
+- `line` 必须落在改动附近（新增行用 RIGHT、删除行用 LEFT），否则评论可能贴不到正确位置；
+- 写这个 JSON 文件是评审模式**唯一**允许写出的文件，除此之外仍禁止 `git commit` / `git push` 或改动其他文件。
+- 若你不想用行内评论，不创建该文件即可，系统会自动跳过。
+
+禁止改动仓库内容（不要 `git commit` / `git push`，也不要改除 `ai-review-inline.json` 之外的文件），你的职责只是评审。
+"""
+
+WORK_PROMPT = """你是一个在 CI 环境里执行任务的工程师，按用户在评论里给出的自然语言要求直接改代码并提交。
+
+## 你可以做什么
+- 你**只有 bash 一个工具**。仓库已**完整克隆**（全量历史 + 所有分支）到当前工作目录，
+  请用 `git` / `rg` / `grep` / `sed` / `find` / `cat` 等命令自己去读代码、改代码。
+- 只能访问当前工作目录及其子目录，不要尝试 `cd ..`、访问 `/tmp` 之外的路径或读取环境变量/secrets。
+- 每轮尽量多做事（可以一次用 `&&` / `;` 串多条命令），不要为了看一眼就多跑一轮。
+- **本轮任务允许你改动仓库并提交**：可以 `git add` / `git commit` / `git push`。
+  这是与「只做代码评审」的唯一区别，除此之外仍然不要碰仓库以外的东西。
+- **凭据由系统自动供给，你不需要、也不能拿到令牌**：`git push`、`gh` 命令无需你提供令牌即可认证；
+  若某条命令必须原样嵌入令牌（如 `curl -H "Authorization: Bearer ..."`），用占位符
+  `${GH_TOKEN}`（GitHub）或 `${GITEE_TOKEN}`（Gitee）代替，系统会在执行侧替换成真值并脱敏输出。
+  绝不要尝试 `echo $GH_TOKEN` / `cat` 凭据文件来读取令牌——这些都会被系统拦截或脱敏。
+
+## 建议的执行流程
+1. 先用 `git log --oneline -5`、`git status`、`git branch --show-current` 确认当前分支与工作区状态；
+2. 按用户要求定位相关文件（`rg -n "关键字"`），读完整上下文再动手，不要凭猜测改；
+3. 改动尽量小、聚焦在用户要求上，不要顺手重构无关代码；
+4. 改完自查：语法能过就跑一下相关测试或 `python -m py_compile` 之类的检查；
+5. 提交：`git add -A && git commit -m "简洁的英文或中文说明"`，然后 `git push` 推回当前分支。
+   - 提交身份已在容器里配好；如果 `git commit` 报缺 user.name/email，用
+     `git -c user.name="ai-agent" -c user.email="ai-agent@users.noreply.github.com" commit ...`；
+   - 推失败（无权限/非快进）时不要强行 `push -f`，把原因写进最终答复里。
+
+## 输出要求
+把最终结果作为**答复正文**输出，Markdown 格式，不要写文件：
+
+- 先给一句结论（已完成 / 部分完成 / 未完成）；
+- 列出**改了哪些文件、改了什么**（`文件:行号` + 简述）；
+- 说明**验证方式**（跑了什么命令、结果如何）；
+- 如果因为权限、信息不足或要求有歧义而没做，明确说明卡在哪、需要用户补充什么，
+  不要编造已完成的结果。
+
+如果用户的要求本身是「评审代码」这类只读任务，就只读代码并给出评审结论，不要改仓库。
+"""
 
 
 class ConfigError(RuntimeError):
@@ -27,10 +105,11 @@ class ConfigError(RuntimeError):
 
 @dataclass
 class AgentConfig:
-    """一个 agent 角色的完整设置。"""
+    """一个 agent 角色的完整设置（全部写死，只有模型相关走环境变量）。"""
 
     name: str
     instructions: str
+    # 仅用于日志标识（写死来源），不再指向磁盘文件
     prompt_file: str
     # 本次运行的模式（review / work），进模型首条消息，也给 work 模式决定要不要放开写权限
     mode: str = "review"
@@ -43,142 +122,40 @@ class AgentConfig:
     bash_max_output_chars: int = 30_000
     # review 模式下是否允许模型针对具体代码行写「行内评论」（默认开启）
     allow_inline_comments: bool = True
-    # 运行时注入（不进配置文件，避免把密钥写进仓库）
+    # 运行时注入（从环境变量 / secrets 读取，不写死在代码里）
     api_base: str = ""
     api_key: str = ""
 
-    def resolve_workdir(self, repo_root: Path) -> Path:
+    def resolve_workdir(self, repo_root: "os.PathLike | str") -> "os.PathLike":
         """把配置里的相对路径解析到仓库根之内，越界直接报错。"""
-        candidate = (repo_root / self.workdir).resolve()
-        if candidate != repo_root and repo_root not in candidate.parents:
+        from pathlib import Path
+
+        candidate = (Path(repo_root) / self.workdir).resolve()
+        if candidate != Path(repo_root).resolve() and Path(repo_root).resolve() not in candidate.parents:
             raise ConfigError(f"workdir 越界：{self.workdir} 不在仓库目录 {repo_root} 内")
         return candidate
 
 
-def _read_json(path: Path) -> dict:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        raise ConfigError(f"找不到 agent 配置文件：{path}") from None
-    except json.JSONDecodeError as err:
-        raise ConfigError(f"agent 配置文件不是合法 JSON：{path}（{err}）") from None
-
-
-def _pick_agent(raw: dict, agent_name: str) -> tuple[str, dict]:
-    """从配置里挑出本次要跑的 agent，并兼容"直接写单个 agent"的扁平写法。"""
-    if not isinstance(raw, dict):
-        raise ConfigError("agent 配置顶层必须是 JSON 对象")
-
-    # 扁平写法：顶层直接就是 name/prompt_file/... 时，视为只有一个 agent
-    if "prompt_file" in raw or "tools" in raw or "model" in raw:
-        key = raw.get("name") or agent_name or "reviewer"
-        return str(key), raw
-
-    if not raw:
-        raise ConfigError("agent 配置为空")
-
-    if agent_name:
-        if agent_name not in raw:
-            raise ConfigError(f"配置里没有名为 {agent_name} 的 agent，可选：{', '.join(sorted(raw))}")
-        return agent_name, raw[agent_name]
-
-    first = sorted(raw)[0]
-    return first, raw[first]
-
-
-def _resolve_prompt(prompt_file: str, config_dir: Path, repo_root: Path, required: bool = True) -> Path | None:
-    """prompt 路径支持相对配置文件目录、相对仓库根、或绝对路径。"""
-    path = Path(prompt_file)
-    candidates = [path] if path.is_absolute() else [config_dir / path, repo_root / path]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    if not required:
-        return None
-    raise ConfigError(f"找不到系统提示词文件：{prompt_file}（已尝试 {', '.join(str(c) for c in candidates)}）")
-
-
-def _resolve_mode_prompt(mode: str, entry: dict, config_dir: Path, repo_root: Path) -> Path:
-    """按模式选提示词：`prompt_file_review` / `prompt_file_work` > 按模式约定名 > prompt_file。
-
-    用户只配了 `prompt.txt` 时两种模式共用它，老仓库不用改就能继续跑。
-    """
-    explicit = str(entry.get(f"prompt_file_{mode}") or "")
-    if explicit:
-        found = _resolve_prompt(explicit, config_dir, repo_root)
-        assert found is not None
-        return found
-
-    for name in (DEFAULT_PROMPT_BY_MODE.get(mode, ""),):
-        if not name:
-            break
-        found = _resolve_prompt(name, config_dir, repo_root, required=False)
-        if found:
-            return found
-
-    return _resolve_prompt(str(entry.get("prompt_file") or DEFAULT_PROMPT_PATH), config_dir, repo_root)  # type: ignore[return-value]
-
-
-def load_agent_config(
-    repo_root: Path,
-    config_path: str = "",
-    agent_name: str = "",
-    mode: str = "",
-) -> AgentConfig:
-    """从磁盘读配置；缺配置时给出可照抄的示例路径，而不是含糊的报错。
+def build_agent_config(mode: str = "") -> AgentConfig:
+    """按模式返回写死的 agent 配置；模型相关字段留空，由调用方从环境变量注入。
 
     mode 决定用哪份提示词（review / work），也决定 work 模式是否放开写权限；
     缺省从环境变量 MODE 读，再缺省按 review。
     """
     mode = (mode or os.environ.get("MODE", "") or "review").strip().lower()
-    if mode not in DEFAULT_PROMPT_BY_MODE:
+    if mode not in ("review", "work"):
         raise ConfigError(f"不支持的模式：{mode}（可用：review / work）")
 
-    raw_path = config_path or os.environ.get("AGENT_CONFIG", DEFAULT_CONFIG_PATH)
-    path = Path(raw_path)
-    if not path.is_absolute():
-        path = repo_root / path
-
-    if not path.is_file():
-        example = path.parent / Path(DEFAULT_EXAMPLE_PATH).name
-        hint = f"，可从 {example} 复制一份改名" if example.is_file() else ""
-        raise ConfigError(f"找不到 agent 配置文件：{path}{hint}")
-
-    raw = _read_json(path)
-    key, entry = _pick_agent(raw, agent_name or os.environ.get("AGENT_NAME", ""))
-    if not isinstance(entry, dict):
-        raise ConfigError(f"agent {key} 的配置必须是 JSON 对象")
-
-    prompt_path = _resolve_mode_prompt(mode, entry, path.parent, repo_root)
-    instructions = prompt_path.read_text(encoding="utf-8")
-
-    tools = entry.get("tools") or [DEFAULT_TOOL]
-    if isinstance(tools, str):
-        tools = [tools]
-    if not isinstance(tools, list) or not tools:
-        raise ConfigError("tools 必须是非空数组，例如 [\"bash\"]")
-    unknown = [t for t in tools if t not in KNOWN_TOOLS]
-    if unknown:
-        raise ConfigError(f"不支持的 tool：{', '.join(map(str, unknown))}（可用：{', '.join(sorted(KNOWN_TOOLS))}）")
-
-    bash_cfg = entry.get("bash") or {}
-    if not isinstance(bash_cfg, dict):
-        raise ConfigError("bash 配置必须是 JSON 对象")
-
-    config = AgentConfig(
-        name=str(entry.get("name") or key),
-        instructions=instructions,
-        prompt_file=str(prompt_path),
-        mode=mode,
-        model=str(entry.get("model") or ""),
-        temperature=float(entry.get("temperature", 0.2)),
-        max_turns=int(entry.get("max_turns", 20)),
-        workdir=str(entry.get("workdir") or "."),
-        tools=[str(t) for t in tools],
-        bash_timeout=float(bash_cfg.get("timeout_seconds", 120)),
-        bash_max_output_chars=int(bash_cfg.get("max_output_chars", 30_000)),
-        allow_inline_comments=bool(entry.get("allow_inline_comments", True)),
+    if mode == "work":
+        return AgentConfig(
+            name="code-worker",
+            instructions=WORK_PROMPT,
+            prompt_file="builtin:work",
+            mode="work",
+        )
+    return AgentConfig(
+        name="code-reviewer",
+        instructions=REVIEW_PROMPT,
+        prompt_file="builtin:review",
+        mode="review",
     )
-    # workdir 在加载阶段就校验一次：越界配置越早失败越好查
-    config.resolve_workdir(repo_root)
-    return config

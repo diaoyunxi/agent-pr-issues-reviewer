@@ -8,7 +8,7 @@
 （PR/Issue 元数据）。代码由脚本自己 `git clone` 到 /tmp 的子目录，
 因此在 CI 里不需要 checkout action，也不要求待审查仓库里有什么特殊文件。
 
-Agent 侧要么用 App 身份（GitHub 安装令牌 / Gitee 应用令牌），要么回退个人令牌，
+Agent 侧 GitHub 用 App 身份（安装令牌），Gitee 用个人令牌，二者都可在失败时回退个人令牌，
 令牌只在内存里用，克隆用的 URL 做了脱敏，不会出现在日志里。
 """
 
@@ -34,7 +34,7 @@ from app_auth import (
     gitee_query,
     github_comment_url,
 )
-from config import ConfigError, load_agent_config
+from config import ConfigError, build_agent_config
 from inline_comments import INLINE_COMMENTS_FILE, post_inline_comments, read_inline_comments
 from repo import RepoError, clone_repo, checkout_head, mask_url, sanitize_env
 from task_context import build_context, build_prompt
@@ -187,9 +187,9 @@ def main() -> int:
     except RepoError as err:
         return fail(f"克隆上游仓库失败：`{err}`")
 
-    # 2) 读配置（config.json + 按模式选提示词），工作目录锁在仓库内
+    # 2) 写死的 agent 配置（提示词/参数在代码里），工作目录锁在仓库内
     try:
-        cfg = load_agent_config(repo_dir, mode=mode)
+        cfg = build_agent_config(mode=mode)
         workspace = cfg.resolve_workdir(repo_dir)
     except ConfigError as err:
         return fail(f"agent 配置不可用：`{err}`")

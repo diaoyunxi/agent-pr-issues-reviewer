@@ -160,9 +160,7 @@ jobs:
           HEAD_SHA: ${{ steps.task.outputs.head_sha }}
           BASE_REF: ${{ steps.task.outputs.base_ref }}
           HEAD_REF: ${{ steps.task.outputs.head_ref }}
-          # —— agent 配置文件位置（相对克隆出来的仓库目录）——
-          AGENT_CONFIG: ${{ vars.AGENT_CONFIG || 'agents/config.json' }}
-          AGENT_NAME: ${{ vars.AGENT_NAME }}
+          # —— 模型（agent 内部的提示词与运行参数已写死在代码里，无需目标仓库配置）——
           # —— 模型 ——
           AI_API_BASE: ${{ secrets.AI_API_BASE || vars.AI_API_BASE }}
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
