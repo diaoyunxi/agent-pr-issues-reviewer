@@ -155,7 +155,7 @@ def main() -> int:
     try:
         result = run_agent(cfg, shell, build_prompt(ctx), workspace)
         body = f"{COMMENT_MARKER}\n{title}\n\n{result}"
-    except (AgentRunError, Exception) as err:  # noqa: BLE001 - 任何异常都要回报到 PR
+    except Exception as err:  # noqa: BLE001 - 任何异常都要回报到 PR（含 AgentRunError）
         traceback.print_exc()
         body = (
             f"{COMMENT_MARKER}\n{title}失败\n\n"
