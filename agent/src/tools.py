@@ -39,7 +39,7 @@ def run_bash(ctx: ShellContext, command: str) -> str:
 
     try:
         proc = subprocess.run(
-            ["bash", "-lc", command],
+            ["bash", "-c", command],
             cwd=ctx.workdir,
             capture_output=True,
             text=True,
