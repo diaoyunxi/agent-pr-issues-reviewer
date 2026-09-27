@@ -2,7 +2,7 @@
 
 基于 **Cloudflare Worker + GitHub Actions** 的自动化 AI 代码助手：既能**审查代码**，也能按评论里的自然语言要求**直接改代码**。
 
-控制面（公开中转仓库）与数据面（目标业务仓库）分离：Worker 只负责「登记任务」，Actions 只负责「跑 Agent + 回写评论」。
+控制面（你 **fork 的仓库**）与数据面（目标业务仓库）分离：Worker 只负责「登记任务」，Actions 只负责「跑 Agent + 回写评论」。
 
 Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上游仓库 `git clone` 到 `/tmp` 的子目录，然后在仓库里自己读代码；行为由目标仓库里的 `agents/config.json` 与两份提示词（`prompt-review.txt` / `prompt-work.txt`）决定，改配置不用改代码。
 
@@ -16,8 +16,8 @@ Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上�
 ## 数据流向
 
 
-> 注意第 4 步之后**没有 checkout**：待审查仓库里往往只有一份 CI 文件，
-> 所以代码由 agent 自己克隆，仓库地址由 CI 通过 `UPSTREAM_REPO` 传进来。
+> 注意第 4 步之后**没有 checkout 待审查仓库**：真正的业务代码由 agent 自己克隆到 `/tmp`，
+> 仓库地址由 CI 通过 `UPSTREAM_REPO` 传进来。本仓库（fork 出来的控制面）只放 Worker / Agent / CI，不含业务代码。
 
 ## 目录结构
 
@@ -28,20 +28,24 @@ Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上�
 
 ## 部署步骤
 
-1. **中转仓库**：新建公开仓库，把 `control-repo/.github/workflows/ai-review.yml` 放进去，创建空的 `tasks/` 目录。
-   `agent/` 脚本**留在中转仓库**即可，CI 直接从本仓库调用，不需要下发到目标仓库。
-2. **目标仓库**：只要放配置与提示词到 `agents/` 目录——`agents/config.json`（可从
-   `agent/src/agents/config.example.json` 复制），提示词按模式拆成
+默认方式：**直接 fork 本仓库**，fork 出来的仓库已自带 Worker / Agent / CI，开箱即用，无需再单独建一个只放 CI 的中转仓库。
+
+1. **Fork 本仓库**：点 GitHub 右上角 Fork，得到你自己的 `你的名/agent-pr-issues-reviewer`。
+   仓库里已经包含 `.github/workflows/ai-review.yml`（CI）与 `tasks/`（任务目录），无需额外搬运任何文件。
+2. **目标仓库**：在**真正要被审查的仓库**（可以是任意别的仓库）里放配置与提示词到 `agents/` 目录——
+   `agents/config.json`（可从 `agent/src/agents/config.example.json` 复制），提示词按模式拆成
    `agents/prompt-review.txt`（评审用）与 `agents/prompt-work.txt`（干活用），由用户自行编写；
    只放一份 `agents/prompt.txt` 也可以，两种模式会共用它。
-   代码由 agent 自己克隆，**不需要**再往目标仓库塞 agent 脚本，也不需要改目标仓库的 workflow。
-   同时在**中转仓库**的 Variables 里配好 `UPSTREAM_REPO`（上游仓库 URL，多个仓库用输入覆盖）。
-3. **配置 App（推荐）**：建好 GitHub App 与 Gitee 应用，把私钥/令牌写进密钥（见「App 身份配置」一节）。
+   代码由 agent 自己克隆，**不需要**往目标仓库塞 agent 脚本，也不需要改目标仓库的 workflow。
+   在**本仓库（fork）**的 Variables 里配好 `UPSTREAM_REPO`（上游仓库 URL，多个仓库用 workflow_dispatch 输入覆盖）。
+3. **配置 App（推荐）**：建好 GitHub App 与 Gitee 应用，把私钥/令牌写进本仓库的 Secrets（见「App 身份配置」一节）。
    App 是可选项——不配就自动用个人令牌，链路照跑，只是评论与提交都以个人账号身份出现。
 4. **Worker**：在**仓库根目录**执行 `npx wrangler secret put GITHUB_PAT`，逐个写入密钥后 `npx wrangler deploy`。
-   若用 Cloudflare 控制台的 **Workers Builds（连接 Git 仓库）**，直接绑定本仓库即可：
+   若用 Cloudflare 控制台的 **Workers Builds（连接 Git 仓库）**，直接绑定你 fork 出来的仓库即可：
    build 命令留空、deploy 命令用默认的 `npx wrangler deploy`，根目录就是仓库根，无需再改 root directory。
-5. **配置 Webhook**：在 GitHub/Gitee 仓库设置里把 Webhook 指向 Worker 域名，内容类型 `application/json`，填入同一份密钥。
+   `wrangler.toml` 里的 `CONTROL_REPO` 默认就是本仓库名，若你改过 fork 名请同步改掉。
+5. **配置 Webhook**：在**目标仓库**的 GitHub/Gitee 设置里把 Webhook 指向 Worker 域名，内容类型 `application/json`，填入同一份密钥。
+   （Worker 收到事件后会把任务 JSON 推回本仓库的 `tasks/`，再由本仓库的 Actions 拉起 Agent。）
 
 ---
 
@@ -96,17 +100,17 @@ Worker 与 Agent 两侧都按同一套优先级取令牌：**先换 App 令牌�
 
 ---
 
-## 模块二：中转仓库的 GitHub Actions
+## 模块二：本仓库（Fork）的 GitHub Actions
 
-`control-repo/.github/workflows/ai-review.yml`：
+`.github/workflows/ai-review.yml`：
 
 
 要点：
 
-- **上游仓库 URL 是必填项**：真正使用时待审查仓库里只有本 workflow 文件，代码由 agent 自己克隆。
+- **上游仓库 URL 是必填项**：本仓库（fork）只带 Worker / Agent / CI，真正的业务代码由 agent 自己克隆到 `/tmp`。
   取值顺序：`workflow_dispatch` 输入 → 仓库变量 `UPSTREAM_REPO` → 任务 JSON 的
   `repo_url`/`clone_url` → 按 `provider + repo` 拼默认地址。都拿不到会直接 `::error::` 退出。
-- **不再 checkout 目标仓库**：job 只 checkout 控制仓库（拿 agent 脚本），代码由
+- **不再 checkout 目标仓库**：job 只 checkout 本仓库（fork，里面就带 `agent/` 脚本），代码由
   `review.py` 克隆到 `/tmp` 的子目录，工作目录随之锁在仓库内。
 - **并发控制**：`concurrency` + `cancel-in-progress: true`，同一 PR 连续 push 只跑最后一次。
 - **防死循环**：`on.push.paths` 只监听 `tasks/*.json`，而清理提交是**删除**该文件；
@@ -259,7 +263,7 @@ work 模式的任务里 `body` 是触发它的**评论正文**（不是 PR 描�
 
 1. **PAT 绝不落盘**：Worker 与 Actions 都只从 Secrets 读，不进代码、不进任务 JSON。
    任务 JSON 里只有 `repo` / `pr_number` 这类公开信息。
-2. **凭据最小权限**：PAT 只给中转仓库写权限 + 目标仓库读权限，不要给 `admin`；
+2. **凭据最小权限**：PAT 只给本仓库（fork）写权限 + 目标仓库读权限，不要给 `admin`；
    优先用 App 身份，安装令牌 1 小时过期、可按仓库授权，比长期 PAT 更收敛。
 3. **App 私钥是最高敏感凭证**：`GH_APP_PRIVATE_KEY` 能换出任意已装仓库的令牌，
    只放 Secret，不进日志、不进任务 JSON；怀疑泄露就立即在 App 设置里重新生成私钥。
@@ -270,7 +274,7 @@ work 模式的任务里 `body` 是触发它的**评论正文**（不是 PR 描�
 6. **防死循环**：清理提交靠 `paths` 过滤（删除 `tasks/*.json` 不匹配 `tasks/*.json` 的新增路径）
    加 `[skip ci]` 双保险。若自行改过 `paths`，务必回归验证一次。
 7. **仓库体积**：如需长期零堆积，切换 `repository_dispatch` 触发（workflow 已内置），
-   任务信息走 `client_payload`，不再产生中转提交。
+   任务信息走 `client_payload`，不再产生本仓库的清理提交。
 8. **并发风暴**：`concurrency` 用 `github.ref` 分组，同一分支上的任务会互相取消；
    若希望按 PR 分组，可在 Worker 侧把 PR 号写进分支名或改用 `repository_dispatch` +
    自定义 `concurrency.group`。
@@ -294,7 +298,7 @@ work 模式的任务里 `body` 是触发它的**评论正文**（不是 PR 描�
 
 ## 二次开发约定
 
-改动 `worker/src/index.ts`、`agent/src` 或 `control-repo/.github/workflows/ai-review.yml` 时，README 里内嵌的
+改动 `worker/src/index.ts`、`agent/src` 或 `.github/workflows/ai-review.yml` 时，README 里内嵌的
 对应代码块必须同步更新——文档与代码不一致会直接误导部署者。
 （`worker/src/app-auth.ts`、`worker/src/env.ts`、`worker/src/mode.ts` 没有内嵌代码块，改动它们只需同步本节与 Secrets 表。）可以用一段脚本自查：
 
@@ -308,7 +312,7 @@ Agent 本地冒烟（不碰模型也能验证克隆 + 配置 + 工具）：
 把 `AI_API_BASE` 指向任意 OpenAI 兼容服务（或本地 mock）就能跑通全链路；
 克隆用的 URL 只要在日志里看不到令牌，脱敏就算生效。
 
-端到端验证建议：在测试仓库开一个 PR，确认「Worker 返回 202 → 中转仓库出现任务 JSON →
+端到端验证建议：在测试仓库开一个 PR，确认「Worker 返回 202 → 本仓库（fork）的 `tasks/` 出现任务 JSON →
 Actions 跑起来 → 目标 PR 收到评论 → 任务 JSON 被删除且未二次触发」。
 
 身份验证：在 Actions 日志里搜「获取到 App 令牌」与「鉴权身份」，确认评论作者是 App（`xxx[bot]`）；

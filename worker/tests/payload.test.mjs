@@ -1,13 +1,13 @@
 /**
  * Worker 触发规则端到端单测：直接调 fetch handler，看哪些事件会入队、mode 是什么。
  *
- * 用假的 waitUntil + 打桩的 fetch 拦住"写中转仓库"这一步，不产生任何真实请求。
+ * 用假的 waitUntil + 打桩的 fetch 拦住"写本仓库 tasks/"这一步，不产生任何真实请求。
  */
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-const ENV = { CONTROL_REPO: 'me/control', GITHUB_PAT: 'x', BOT_NAME: 'agent-pr-reviewer' }
+const ENV = { CONTROL_REPO: 'me/agent-pr-reviewer', GITHUB_PAT: 'x', BOT_NAME: 'agent-pr-reviewer' }
 
 /** 跑一次 webhook，返回 {status, task}；204 表示按规则丢弃 */
 async function dispatch(payload, event, env = ENV) {

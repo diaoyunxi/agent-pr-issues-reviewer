@@ -45,8 +45,8 @@ permissions:
   contents: write
 
 env:
-  # 上游仓库 URL：真正使用时，待审查仓库里只有本 workflow 文件，
-  # 代码由 agent 自己克隆，所以仓库地址必须由上游设置进来。
+  # 上游仓库 URL：本仓库（你 fork 的仓库）同时带有 agent/ 脚本，CI 直接调用；
+  # 真正要审查的代码由 agent 自己 git clone 到 /tmp，所以仓库地址必须由外部传进来。
   # 优先级：workflow_dispatch 输入 > 仓库变量 UPSTREAM_REPO > 任务 JSON 的 repo_url/clone_url
   UPSTREAM_REPO: ${{ inputs.upstream_repo || vars.UPSTREAM_REPO }}
   PROVIDER: ${{ inputs.provider || vars.PROVIDER || 'github' }}
@@ -55,7 +55,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout control repo
+      - name: Checkout repo
         uses: actions/checkout@v4
         with:
           # 需要 push 回清理提交，用 PAT 而不是默认 GITHUB_TOKEN
@@ -187,7 +187,7 @@ jobs:
 
       - name: Install agent deps
         run: |
-          # 待审查仓库只含本 workflow 文件，agent 脚本不在本地，从控制仓库取
+          # agent 脚本就在本仓库的 agent/ 目录，直接安装依赖即可
           python -m pip install --quiet -r agent/requirements.txt
 
       - name: Run AI agent

@@ -1,6 +1,6 @@
 /** Worker 运行时注入的环境变量与密钥（密钥用 `wrangler secret put` 写入） */
 export interface AppEnv {
-  /** 中转仓库，格式 owner/repo */
+  /** 本仓库（你 fork 的仓库），格式 owner/repo；Worker 把任务 JSON 推到这里的 tasks/ 目录 */
   CONTROL_REPO: string
   /**
    * 机器人在评论里的 @ 名称（GitHub / Gitee 各配一份）。
@@ -8,7 +8,7 @@ export interface AppEnv {
    * 不配则退化为"任意 @ 提及"（Issue 开启也会被认为是 @ 了机器人）。
    */
   BOT_NAME?: string
-  /** 个人令牌，App 不可用时回退用；写中转仓库也需要它 */
+  /** 个人令牌，App 不可用时回退用；写本仓库的 tasks/ 也需要它 */
   GITHUB_PAT: string
   /** Gitee 个人令牌，Gitee App 不可用时回退用 */
   GITEE_PAT?: string

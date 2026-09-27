@@ -2,9 +2,9 @@
  * Webhook 接收器与转发器。
  *
  * 接收 GitHub / Gitee 的 Webhook，把目标仓库与 PR/Issue 信息落成一个 JSON 任务文件，
- * Push 到公开中转仓库，由中转仓库的 GitHub Actions 拉起 AI 执行（审查或干活）。
+ * Push 到本仓库（你 fork 的仓库）的 tasks/ 目录，由本仓库的 GitHub Actions 拉起 AI 执行（审查或干活）。
  *
- * 之所以要中转：执行方的 Actions 跑在公开中转仓库上（免费额度），
+ * 之所以要经本仓库中转：执行方的 Actions 跑在这个 fork 出来的仓库上（免费额度），
  * 而代码要从目标仓库拉取，所以这里只传递"对谁做什么"的描述，不传递代码本身。
  *
  * 触发规则（统一归一化成 mode: review | work）：
@@ -15,7 +15,7 @@
  * - @ 的识别：`@` + BOT_NAME + 一个空格，后面第一个词是 review 或 work；
  *   review → 评审，work → 按后面的自然语言描述干活。
  *
- * 写中转仓库的身份优先用 App：GitHub 走 App 安装令牌，Gitee 走 App access_token，
+ * 写本仓库（tasks/ 目录）的身份优先用 App：GitHub 走 App 安装令牌，Gitee 走 App access_token，
  * 两者都拿不到时回退个人令牌，见 app-auth.ts。
  */
 
@@ -393,7 +393,7 @@ async function pushTaskToControlRepo(env: Env, task: ReviewTask): Promise<void> 
   const path = `tasks/${repoName}-${task.pr_number}-${Date.now()}.json`
   const url = `${api}/repos/${env.CONTROL_REPO}/contents/${path}`
 
-  // 中转仓库在 GitHub，只能用 GitHub 侧身份；Gitee 的 App 令牌换不来 GitHub 写权限
+  // 本仓库在 GitHub，只能用 GitHub 侧身份；Gitee 的 App 令牌换不来 GitHub 写权限
   const { token, source } = await resolveToken(env, 'github')
   if (source === 'pat') {
     console.warn('[push-task] GitHub App 不可用，已回退 GITHUB_PAT')
