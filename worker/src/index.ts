@@ -15,8 +15,8 @@
  * - @ 的识别：`@` + BOT_NAME + 一个空格，后面第一个词是 review 或 work；
  *   review → 评审，work → 按后面的自然语言描述干活。
  *
- * 写本仓库（tasks/ 目录）的身份优先用 App：GitHub 走 App 安装令牌，Gitee 走 App access_token，
- * 两者都拿不到时回退个人令牌，见 app-auth.ts。
+ * 写本仓库（tasks/ 目录）的身份：GitHub 优先用 App 安装令牌，拿不到回退个人令牌；
+ * Gitee 始终用个人令牌（GITEE_PAT），见 app-auth.ts。
  */
 
 import { resolveToken } from './app-auth.ts'

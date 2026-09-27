@@ -1,9 +1,8 @@
 /**
- * GitHub App / Gitee App 鉴权：优先用 App 身份，失败自动回退个人令牌（PAT）。
+ * GitHub App 鉴权：优先用 App 身份，失败自动回退个人令牌（PAT）。
  *
  * GitHub App 用私钥签 JWT，再换取 1 小时有效的安装令牌；
- * Gitee 的「应用」没有安装令牌换发接口，只认授权下发的 access_token，
- * 因此 Gitee 侧直接透传，仅在它失效时回退 PAT。
+ * Gitee 侧无 App 身份，始终使用个人令牌（GITEE_PAT）。
  */
 
 import type { AppEnv } from './env.ts'
@@ -23,10 +22,10 @@ interface CachedToken {
 
 const cache = new Map<string, CachedToken>()
 
-/** 取该平台当前可用的令牌：App 优先，App 不可用则回退 PAT */
+/** 取该平台当前可用的令牌：GitHub 优先用 App 身份，二者都不可用则回退 PAT；Gitee 仅用个人令牌 */
 export async function resolveToken(env: AppEnv, platform: 'github' | 'gitee'): Promise<CachedToken> {
   const fallback = platform === 'gitee' ? env.GITEE_PAT : env.GITHUB_PAT
-  const appConfigured = platform === 'gitee' ? Boolean(env.GITEE_APP_TOKEN) : Boolean(
+  const appConfigured = platform === 'github' && Boolean(
     env.GH_APP_ID && env.GH_APP_INSTALLATION_ID && env.GH_APP_PRIVATE_KEY,
   )
 
@@ -34,9 +33,7 @@ export async function resolveToken(env: AppEnv, platform: 'github' | 'gitee'): P
     const cached = cache.get(platform)
     if (cached && Date.now() < cached.expiresAt) return cached
     try {
-      const issued = platform === 'gitee'
-        ? await verifyGiteeAppToken(env)
-        : await issueGitHubInstallationToken(env)
+      const issued = await issueGitHubInstallationToken(env)
       cache.set(platform, issued)
       return issued
     } catch (err) {
@@ -77,22 +74,6 @@ async function issueGitHubInstallationToken(env: AppEnv): Promise<CachedToken> {
     token: data.token,
     source: 'app',
     expiresAt: Math.min(expiresAt, Date.now() + 3600_000) - REFRESH_MARGIN_SECONDS * 1000,
-  }
-}
-
-/** Gitee 的 App access_token 由授权时下发，这里只探测一次有效性，失效则交给上层回退 */
-async function verifyGiteeAppToken(env: AppEnv): Promise<CachedToken> {
-  const api = (env.GITEE_API ?? 'https://gitee.com/api/v5').replace(/\/$/, '')
-  const resp = await fetch(`${api}/user?access_token=${encodeURIComponent(env.GITEE_APP_TOKEN!)}`, {
-    headers: { 'User-Agent': 'agent-pr-reviewer-worker' },
-  })
-  if (!resp.ok) {
-    throw new Error(`Gitee App 令牌校验失败 ${resp.status}: ${await resp.text()}`)
-  }
-  return {
-    token: env.GITEE_APP_TOKEN!,
-    source: 'app',
-    expiresAt: Date.now() + 3600_000 - REFRESH_MARGIN_SECONDS * 1000,
   }
 }
 

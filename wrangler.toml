@@ -9,7 +9,7 @@ compatibility_date = "2024-11-01"
 #      在 Secrets 区直接新增（与 `wrangler secret put` 等价，均为加密存储，运行时以环境变量注入）
 # 密钥清单：
 #   GITHUB_PAT / GITEE_PAT / GITHUB_WEBHOOK_SECRET / GITEE_WEBHOOK_SECRET
-#   GH_APP_ID / GH_APP_INSTALLATION_ID / GH_APP_PRIVATE_KEY / GITEE_APP_TOKEN（App 身份，可选）
+#   GH_APP_ID / GH_APP_INSTALLATION_ID / GH_APP_PRIVATE_KEY（GitHub App 身份，可选）
 # Worker 写本仓库（你 fork 的仓库）的 tasks/ 时优先用 GitHub App 安装令牌，拿不到才回退 GITHUB_PAT。
 
 [vars]

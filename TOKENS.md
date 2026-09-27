@@ -16,12 +16,11 @@
 | `GH_APP_ID` | 是 | GitHub App 的 ID，App 身份用 | `1234567` |
 | `GH_APP_INSTALLATION_ID` | 是 | App 装到目标账号的安装 ID | `98765432` |
 | `GH_APP_PRIVATE_KEY` | 是 | App 私钥 PEM 全文，最高敏感 | `-----BEGIN PRIVATE KEY-----\nMIIE...` |
-| `GITEE_APP_TOKEN` | 是 | Gitee 应用授权下发的 access_token | `1a2b3c4d5e6f7g8h9i0j` |
 | `AI_API_BASE` | 建议是 | 模型接口基址，兼容网关才需改 | `https://api.deepseek.com/v1` |
 | `AI_MODEL` | 否 | 模型名，不填默认 gpt-4o-mini | `gpt-4o` |
 | `GITEE_API` | 否 | Gitee API 基址，自托管才改 | `https://gitee.com/api/v5` |
 
-> `GH_APP_*` 与 `GITEE_APP_TOKEN` 是可选增强：不配则以个人账号身份评论，链路照跑。
+> `GH_APP_*` 是可选增强：不配则以个人账号身份评论，链路照跑。
 > `AI_API_BASE` / `AI_MODEL` 也可放 Variables，见下表，二选一即可。
 
 ### Variables（明文，非敏感）
@@ -58,7 +57,6 @@
 | `GH_APP_ID` | 是 | 与 GitHub 侧同一个 App ID | `1234567` |
 | `GH_APP_INSTALLATION_ID` | 是 | 与 GitHub 侧同一个安装 ID | `98765432` |
 | `GH_APP_PRIVATE_KEY` | 是 | 与 GitHub 侧同一份私钥 PEM | `-----BEGIN PRIVATE KEY-----\nMIIE...` |
-| `GITEE_APP_TOKEN` | 是 | 与 GitHub 侧同一个 Gitee 令牌 | `1a2b3c4d5e6f7g8h9i0j` |
 
 > `GITHUB_WEBHOOK_SECRET` 缺失时 Worker 会放行所有请求，**线上务必配置**。
 > App 三项填了就用 App 身份，拿不到令牌自动回退 `GITHUB_PAT` / `GITEE_PAT`。
@@ -79,7 +77,6 @@
 | 值 | GitHub 侧位置 | Cloudflare 侧位置 |
 | --- | --- | --- |
 | `GH_APP_ID` / `GH_APP_INSTALLATION_ID` / `GH_APP_PRIVATE_KEY` | Actions Secrets | Worker Secrets |
-| `GITEE_APP_TOKEN` | Actions Secrets | Worker Secrets |
 | `GITHUB_WEBHOOK_SECRET` | 目标仓库 Webhook 设置页 | Worker Secrets |
 
 Webhook 侧的密钥值必须与 Worker 里的完全一致，否则签名校验失败（GitHub 返回 401 / Gitee 返回 403）。

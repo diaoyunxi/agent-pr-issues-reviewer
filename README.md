@@ -38,8 +38,9 @@ Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上�
    只放一份 `agents/prompt.txt` 也可以，两种模式会共用它。
    代码由 agent 自己克隆，**不需要**往目标仓库塞 agent 脚本，也不需要改目标仓库的 workflow。
    在**本仓库（fork）**的 Variables 里配好 `UPSTREAM_REPO`（仅作全局兜底：上游仓库 URL 实际由 Worker 在每个任务 JSON 里按仓库分别带来，多个仓库无需手动切换）。
-3. **配置 App（推荐）**：建好 GitHub App 与 Gitee 应用，把私钥/令牌写进本仓库的 Secrets（见「App 身份配置」一节）。
-   App 是可选项——不配就自动用个人令牌，链路照跑，只是评论与提交都以个人账号身份出现。
+3. **配置 GitHub App（可选）**：建好 GitHub App，把私钥写进本仓库的 Secrets（见「App 身份」一节）。
+   GitHub App 是可选项——不配就自动用个人令牌，链路照跑，只是评论与提交都以个人账号身份出现；
+   Gitee 不走 App，始终用个人令牌 `GITEE_PAT`。
 4. **Worker**：在**仓库根目录**执行 `npx wrangler secret put GITHUB_PAT`，逐个写入密钥后 `npx wrangler deploy`。
    若用 Cloudflare 控制台的 **Workers Builds（连接 Git 仓库）**，直接绑定你 fork 出来的仓库即可：
    build 命令留空、deploy 命令用默认的 `npx wrangler deploy`，根目录就是仓库根，无需再改 root directory。
@@ -86,17 +87,14 @@ Worker 与 Agent 两侧都按同一套优先级取令牌：**先换 App 令牌�
 | 平台 | App 令牌来源 | 有效期 | 回退 |
 | --- | --- | --- | --- |
 | GitHub | `GH_APP_ID` + `GH_APP_INSTALLATION_ID` + `GH_APP_PRIVATE_KEY` 签 JWT，换 `/app/installations/{id}/access_tokens` | 1 小时，自动换发 | `GITHUB_PAT` / `PAT_TOKEN` |
-| Gitee | `GITEE_APP_TOKEN`（应用授权后下发的 `access_token`，Gitee 无安装令牌换发接口） | 由 Gitee 决定，先做一次 `/user` 有效性探测 | `GITEE_PAT` / `PAT_TOKEN` |
+| Gitee | 无 App 身份，始终用个人令牌 `GITEE_PAT` | 由 Gitee 决定（个人令牌建议设长期有效） | — |
 
 - 令牌只在进程内缓存：Worker 侧按平台缓存并在过期前 5 分钟刷新，换发失败退避 60 秒再试；
   Agent 侧每次运行只换一次，回写评论前再确认一次。
-- Gitee 应用没有"安装令牌"概念，只能拿到授权时的 `access_token`，因此 Gitee 侧只做探测不做事后换发；
-  这一点与 GitHub 不同，不是实现遗漏。
-- 拉取**跨平台**代码（GitHub Actions 拉 Gitee 仓库）时，Gitee App 令牌无法直接用于 `actions/checkout`，
-  这种情况下由 workflow 的 `checkout_token` 回退 `PAT_TOKEN`。
+- Gitee 不配置 App，直接使用个人令牌 `GITEE_PAT`，无需走授权流程。
+- 拉取**跨平台**代码（GitHub Actions 拉 Gitee 仓库）时，由 workflow 的 `checkout_token` 回退 `PAT_TOKEN`。
 
-> ⚠️ Gitee 应用令牌请用**能长期有效**的那种（Gitee 个人令牌可设长有效期）；
-> 若 App 令牌过期又没配 `GITEE_PAT`，回写会失败并在 Actions 日志中报错。
+> ⚠️ Gitee 用个人令牌 `GITEE_PAT`，建议设较长有效期；过期后回写会失败并在 Actions 日志中报错。
 
 ---
 
@@ -118,7 +116,7 @@ Worker 与 Agent 两侧都按同一套优先级取令牌：**先换 App 令牌�
 - **仓库体积**：JSON 用完即删。若仍在意历史提交带来的膨胀，可改用 `repository_dispatch`
   触发（workflow 已内置该分支），Worker 端把 `PUT contents` 换成 `POST /dispatches`。
 - **令牌换发（`Issue app installation token` 步骤）**：GitHub 侧用 `openssl` 签 RS256 JWT，
-  再 POST 换安装令牌；Gitee 侧没有换发接口，只探测 `GITEE_APP_TOKEN` 是否有效。
+  再 POST 换安装令牌；Gitee 侧无 App，直接用 `GITEE_PAT`。
   两条路径任一步失败都落到 `PAT_TOKEN`，不会让整个 job 挂掉，因此该步骤**不需要 `continue-on-error`**。
   换到的令牌交给 agent 用于 `git clone` **与**回写评论，两边身份一致。
 - **重新触发**：CI 没有手动 `workflow_dispatch`。要补跑一次，要么让 Worker 再 push 一条任务
@@ -198,7 +196,7 @@ Worker 与 Agent 两侧都按同一套优先级取令牌：**先换 App 令牌�
   `origin` 还原成公开地址，令牌**不留在** `.git/config`；推送认证交给执行器 sidecar 的
   credential helper，模型读不到 `.git/config` 里的令牌。
 - 任何日志输出都过 `mask_url()`，报错信息也会把令牌替换成 `***`，不会泄到 Actions 日志里。
-- 令牌优先用 App 身份（GitHub 安装令牌 / Gitee 应用令牌），取不到再回退 `PAT_TOKEN`。
+- GitHub 优先用 App 身份（安装令牌），取不到回退 `PAT_TOKEN`；Gitee 始终用 `GITEE_PAT`。
 - **CI 侧**：只传上游仓库 URL 与任务 JSON，**不再 checkout 代码**，也不需要待审查仓库里有别的文件。
   真令牌仅在执行器 sidecar 进程内使用，AI 进程不持有。
 
@@ -245,8 +243,7 @@ CI 侧注入，脚本侧只读（真正必填的只有三个上游/模型相关�
 | `TARGET_REPO` / `PR_NUMBER` / `IS_ISSUE` / `PROVIDER` | ❌ | 回写评论用；`PROVIDER` 决定 API 基址与鉴权方式 |
 | `TITLE` / `BODY` / `HTML_URL` / `USER` | ❌ | PR/Issue 元数据，进模型首条消息 |
 | `BASE_SHA` / `HEAD_SHA` / `BASE_REF` / `HEAD_REF` | ❌ | 有 sha 时按 sha 浅拉取，只有分支名时按分支克隆 |
-| `GH_APP_ID` / `GH_APP_INSTALLATION_ID` / `GH_APP_PRIVATE_KEY` | ❌ | App 优先路径的凭据 |
-| `GITEE_APP_TOKEN` | ❌ | Gitee App 优先路径的凭据 |
+| `GH_APP_ID` / `GH_APP_INSTALLATION_ID` / `GH_APP_PRIVATE_KEY` | ❌ | App 优先路径（仅 GitHub）的凭据 |
 | `GITHUB_TOKEN` | ❌ | 回退令牌（Actions 里取 `PAT_TOKEN`） |
 | `CLONE_ROOT` | ❌ | 克隆根目录，默认 `/tmp` |
 

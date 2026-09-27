@@ -1,8 +1,7 @@
-"""GitHub App / Gitee App 鉴权：优先用 App 身份，失败自动回退个人令牌（PAT）。
+"""GitHub App 鉴权：优先用 App 身份，失败自动回退个人令牌（PAT）。
 
 GitHub App 用私钥签出 JWT，再换取 1 小时有效的安装令牌；
-Gitee 的「应用」不给安装令牌换发接口，只认授权得到的 access_token，
-所以 Gitee 侧直接透传 App 授权的 access_token，只有它失效时才回退 PAT。
+Gitee 侧无 App 身份，始终使用个人令牌（GITEE_PAT）。
 
 每次运行只换一次令牌并缓存，避免在 Agent 的工具调用里反复请求。
 """
@@ -40,7 +39,6 @@ class TokenProvider:
         installation_id: str = "",
         app_id: str = "",
         private_key: str = "",
-        app_token: str = "",
         fallback_token: str = "",
         api_base: str = "",
         session: requests.Session | None = None,
@@ -49,7 +47,6 @@ class TokenProvider:
         self.installation_id = installation_id
         self.app_id = app_id
         self.private_key = private_key
-        self.app_token = app_token
         self.fallback_token = fallback_token
         self.api_base = (api_base or (GITEE_API if provider == "gitee" else GITHUB_API)).rstrip("/")
         self.session = session or requests.Session()
@@ -58,10 +55,10 @@ class TokenProvider:
         self.source = "none"
 
     def app_configured(self) -> bool:
-        """App 凭据是否齐全到可以尝试换令牌。"""
-        if self.provider == "github":
-            return bool(self.installation_id and self.app_id and self.private_key)
-        return bool(self.app_token)
+        """App 凭据是否齐全到可以尝试换令牌（仅 GitHub 有 App 身份）。"""
+        if self.provider != "github":
+            return False
+        return bool(self.installation_id and self.app_id and self.private_key)
 
     def token(self) -> str:
         """取可用令牌；App 优先，换发失败则回退个人令牌。"""
@@ -70,7 +67,7 @@ class TokenProvider:
                 return self._token
             try:
                 # 留 5 分钟余量，避免令牌在请求途中过期
-                self._token, ttl = self._issue_app_token()
+                self._token, ttl = self._github_installation_token()
                 self._expires_at = time.time() + ttl - TOKEN_REFRESH_MARGIN_SECONDS
                 self.source = "app"
                 return self._token
@@ -85,16 +82,6 @@ class TokenProvider:
             return self._token
 
         raise RuntimeError("App 凭据与个人令牌均不可用，无法继续")
-
-    def _issue_app_token(self) -> tuple[str, int]:
-        """返回 (令牌, 有效期秒数)。"""
-        if self.provider == "github":
-            return self._github_installation_token()
-        # Gitee 的 App access_token 是授权时下发的，没有换发接口，这里只探测一次有效性；
-        # 有效期未知，按 1 小时缓存，过期后再探测，失效时由上层回退 PAT
-        resp = self.session.get(f"{self.api_base}/user", params={"access_token": self.app_token}, timeout=30)
-        resp.raise_for_status()
-        return self.app_token, 3600
 
     def _github_installation_token(self) -> tuple[str, int]:
         resp = self.session.post(
@@ -136,7 +123,6 @@ def build_token_provider(provider: str, session: requests.Session | None = None)
         installation_id=os.environ.get("GH_APP_INSTALLATION_ID", ""),
         app_id=os.environ.get("GH_APP_ID", ""),
         private_key=os.environ.get("GH_APP_PRIVATE_KEY", ""),
-        app_token=os.environ.get("GITEE_APP_TOKEN", ""),
         fallback_token=os.environ.get("GITHUB_TOKEN", ""),
         api_base=os.environ.get("GITHUB_API", ""),
         session=session,

@@ -10,7 +10,7 @@ export interface AppEnv {
   BOT_NAME?: string
   /** 个人令牌，App 不可用时回退用；写本仓库的 tasks/ 也需要它 */
   GITHUB_PAT: string
-  /** Gitee 个人令牌，Gitee App 不可用时回退用 */
+  /** Gitee 个人令牌（Gitee 侧唯一身份凭据） */
   GITEE_PAT?: string
   /** GitHub App ID */
   GH_APP_ID?: string
@@ -18,8 +18,6 @@ export interface AppEnv {
   GH_APP_INSTALLATION_ID?: string
   /** GitHub App 私钥（PKCS#8 PEM，整段放 Secret） */
   GH_APP_PRIVATE_KEY?: string
-  /** Gitee 应用的 access_token（授权后下发，无换发接口） */
-  GITEE_APP_TOKEN?: string
   /** GitHub Webhook 的 HMAC 密钥，未配置则不校验（仅限本地调试） */
   GITHUB_WEBHOOK_SECRET?: string
   /** Gitee Webhook 密码，Gitee 用明文密码而非 HMAC */

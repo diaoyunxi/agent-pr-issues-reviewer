@@ -1,4 +1,4 @@
-# GitHub App / Gitee App 权限与 Webhook 事件清单
+# GitHub App 权限与 Gitee Webhook 事件清单
 
 依据 `worker/src/index.ts`（事件解析）、`worker/src/app-auth.ts`（App 换令牌）与 `agent/src`（克隆、回写评论、work 模式 push）实际用到的能力整理。
 
@@ -51,25 +51,13 @@
 
 ---
 
-## 二、Gitee 应用（开放平台 → 创建应用）
+## 二、Gitee（私人令牌，无 App）
 
-Gitee 没有「安装令牌」概念，只能拿到授权时下发的 `access_token`，因此权限 = 授权时勾选的 scope。
+Gitee 不走 App 身份，直接用**个人令牌（PAT）**：在 Gitee → 设置 → 私人令牌 勾选
+`projects` / `issues` / `pull_requests` / `notes` 四项，将令牌填入 `GITEE_PAT`。
+令牌账号必须对目标仓库有写权限，`work` 模式回推提交也需要它。
 
-### 1. 应用授权 scope
-
-| Scope | 是否勾选 | 为什么需要 |
-| --- | --- | --- |
-| **user_info** | ✅ | Worker 用 `/user` 探测令牌是否有效 |
-| **projects** | ✅ | 读取/写入项目，用于克隆与 `work` 模式推送 |
-| **issues** | ✅ | 读写 Issue 并回写评论 |
-| **notes** | ✅ | 评论能力（Issue / PR 下的评论都靠它） |
-| **pull_requests** | ✅ | 读写 PR、回写 PR 评论 |
-| hook / groups / 其余 | ❌ | 用不到 |
-
-授权后拿到的 `access_token` 填入 `GITEE_APP_TOKEN`。
-用哪个账号授权，令牌就对该账号可见的仓库生效——**授权账号必须对目标仓库有写权限**。
-
-### 2. 目标仓库 Webhook（仓库 → 管理 → WebHooks → 添加）
+### 1. 目标仓库 Webhook（仓库 → 管理 → WebHooks → 添加）
 
 | 字段 | 填什么 |
 | --- | --- |
@@ -115,7 +103,7 @@ App 没配或失效时会回退到 PAT，权限不够同样会失败。
 ### Gitee 私人令牌
 
 - 勾选 `projects`、`issues`、`pull_requests`、`notes` 四项
-- 有效期设成**长期**；过期后若 `GITEE_APP_TOKEN` 也失效，回写评论会直接失败
+- 有效期设成**长期**；过期后回写评论会直接失败
 
 ---
 
