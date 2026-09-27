@@ -8,6 +8,7 @@
     "max_turns": 20,
     "workdir": ".",
     "tools": ["bash"],
+    "allow_inline_comments": true,
     "bash": {
       "timeout_seconds": 120,
       "max_output_chars": 30000

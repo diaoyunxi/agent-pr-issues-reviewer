@@ -35,6 +35,7 @@ from app_auth import (
     github_comment_url,
 )
 from config import ConfigError, load_agent_config
+from inline_comments import INLINE_COMMENTS_FILE, post_inline_comments, read_inline_comments
 from repo import RepoError, clone_repo, checkout_head, mask_url, sanitize_env
 from task_context import build_context, build_prompt
 from tools import ShellContext
@@ -218,7 +219,17 @@ def main() -> int:
 
     try:
         # 长时间跑 agent 后安装令牌可能已过期，回写前重新取一次
-        return _report(provider, repo, number, provider_client.token(), body, is_issue)
+        token = provider_client.token()
+        # review 模式下，把模型写在文件里的「行内代码评论」挂到 PR 的具体代码行上
+        if mode == "review" and not is_issue and number and cfg.allow_inline_comments:
+            comments = read_inline_comments(workspace)
+            if comments:
+                posted = post_inline_comments(
+                    provider, repo, number, token, ctx["head_sha"], ctx["base_sha"],
+                    repo_dir, workspace, comments,
+                )
+                print(f"[review] 已回写 {posted}/{len(comments)} 条行内评论（文件 {INLINE_COMMENTS_FILE}）")
+        return _report(provider, repo, number, token, body, is_issue)
     except Exception:  # noqa: BLE001
         traceback.print_exc()
         return 1

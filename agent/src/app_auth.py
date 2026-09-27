@@ -147,6 +147,16 @@ def github_comment_url(repo: str, number: int) -> str:
     return f"{GITHUB_API}/repos/{repo}/issues/{number}/comments"
 
 
+def github_inline_comment_url(repo: str, number: int) -> str:
+    """PR 行内（diff 行）评论：把评论挂到具体代码行上。"""
+    return f"{GITHUB_API}/repos/{repo}/pulls/{number}/comments"
+
+
+def gitee_inline_comment_url(repo: str, number: int) -> str:
+    """PR 行内（diff 行）评论：Gitee 只认 diff 内的 position，不认 line/side。"""
+    return f"{GITEE_API}/repos/{repo}/pulls/{number}/comments"
+
+
 def gitee_comment_url(repo: str, number: int, is_issue: bool) -> str:
     kind = "issues" if is_issue else "pulls"
     return f"{GITEE_API}/repos/{repo}/{kind}/{number}/comments"

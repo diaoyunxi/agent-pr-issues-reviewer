@@ -41,6 +41,8 @@ class AgentConfig:
     tools: list[str] = field(default_factory=lambda: [DEFAULT_TOOL])
     bash_timeout: float = 120.0
     bash_max_output_chars: int = 30_000
+    # review 模式下是否允许模型针对具体代码行写「行内评论」（默认开启）
+    allow_inline_comments: bool = True
     # 运行时注入（不进配置文件，避免把密钥写进仓库）
     api_base: str = ""
     api_key: str = ""
@@ -175,6 +177,7 @@ def load_agent_config(
         tools=[str(t) for t in tools],
         bash_timeout=float(bash_cfg.get("timeout_seconds", 120)),
         bash_max_output_chars=int(bash_cfg.get("max_output_chars", 30_000)),
+        allow_inline_comments=bool(entry.get("allow_inline_comments", True)),
     )
     # workdir 在加载阶段就校验一次：越界配置越早失败越好查
     config.resolve_workdir(repo_root)

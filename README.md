@@ -168,6 +168,10 @@ Worker 与 Agent 两侧都按同一套优先级取令牌：**先换 App 令牌�
 - `tools` 目前只认 `bash`；写未知工具名会在启动时报错，不会静默忽略。
 - 顶层也可以直接写扁平结构（只有 `prompt_file`/`tools`/`model` 等字段）当单 agent 用。
 - 路径可用 `AGENT_CONFIG` 覆盖（默认 `agents/config.json`）。
+- `allow_inline_comments`（布尔，默认 `true`）：仅对 `review` 模式生效。开启后，模型可以把
+  针对**具体代码行**的评审意见写成工作目录下的 `ai-review-inline.json`，系统会把这些意见作为
+  **行内评论**挂到 PR 的 diff 对应行上（GitHub 用 `line`+`side`，Gitee 用换算后的 `position`）。
+  设为 `false` 则只产出总结评论，不做行内评论。
 
 ### 唯一的工具：bash
 
@@ -208,6 +212,21 @@ Worker 与 Agent 两侧都按同一套优先级取令牌：**先换 App 令牌�
    任何环节失败都会回写失败评论，不会静默丢任务。
 6. `work` 模式额外多两步：提示词允许模型改代码并 `git commit/push`，克隆时按分支而非 sha 准备，
    推回的是触发评论所在 PR 的源分支。
+
+### 行内代码评论（review 模式）
+
+`review` 模式下，除了落在总结评论里的 `文件:行号` 描述，还可以让评审意见**直接挂在 PR diff 的对应代码行上**：
+
+- 由提示词驱动：模型审查时把具体代码行的意见写成工作目录下的 `ai-review-inline.json`
+  （一个数组，每条 `{path, line, side, body}`），详见 `prompt-review.txt`；
+- 由 `review.py` 在 agent 跑完后读取并回写，**令牌只存在于 `review.py` 与执行器侧，模型永远拿不到**；
+- 平台差异被封装在 `inline_comments.py` 里：GitHub 用官方推荐的 `line` + `side`（文件行号，直观），
+  Gitee 接口只认 diff 内的 `position`，由 `git diff` 现算；
+- 任何一条行内评论失败都只记日志、不阻断其余评论与总结评论的回写；
+- 开关在配置里：`agents/config.json` 的 `allow_inline_comments`（默认 `true`），设为 `false` 即只出总结。
+
+注意：`side` 用 `RIGHT`（新增/修改行，落在 `+` 一侧）或 `LEFT`（被删行，落在 `-` 一侧），
+`line` 必须是文件行号且落在改动附近，否则评论可能贴不到正确位置；Issue 没有 diff，不会走行内评论。
 
 ### 环境变量
 
