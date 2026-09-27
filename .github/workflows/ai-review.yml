@@ -4,37 +4,10 @@ on:
   push:
     paths:
       - 'tasks/*.json'
-  # 备用触发方式：不依赖 Push，避免清理 JSON 造成仓库膨胀
+  # 备用触发方式：不依赖 Push，避免清理 JSON 造成仓库膨胀。
+  # 仍由 Cloudflare Worker 经 repository_dispatch 推送 client_payload JSON，不接收手动输入。
   repository_dispatch:
     types: [ai-review]
-  # 手动补跑：除了下面这些输入，也可以在仓库变量里配
-  #   UPSTREAM_REPO / AI_API_BASE / AI_API_KEY / AI_MODEL，日常不必手填
-  workflow_dispatch:
-    inputs:
-      upstream_repo:
-        description: '上游（待审查）仓库 URL，如 https://github.com/owner/repo'
-        required: false
-      provider:
-        description: '平台：github / gitee'
-        required: false
-        default: github
-      target_repo:
-        description: '目标仓库 owner/repo（回写评论用）'
-        required: false
-      pr_number:
-        description: 'PR / Issue 编号'
-        required: false
-      is_issue:
-        description: '是否是 Issue（true/false）'
-        required: false
-        default: 'false'
-      mode:
-        description: '执行模式：review（只评审）/ work（按 instruction 干活）'
-        required: false
-        default: 'review'
-      instruction:
-        description: 'work 模式的自然语言要求'
-        required: false
 
 # 同一 PR 的多次提交只保留最新一次审查，旧任务直接被取消
 concurrency:
@@ -45,11 +18,10 @@ permissions:
   contents: write
 
 env:
-  # 上游仓库 URL：本仓库（你 fork 的仓库）同时带有 agent/ 脚本，CI 直接调用；
-  # 真正要审查的代码由 agent 自己 git clone 到 /tmp，所以仓库地址必须由外部传进来。
-  # 优先级：workflow_dispatch 输入 > 仓库变量 UPSTREAM_REPO > 任务 JSON 的 repo_url/clone_url
-  UPSTREAM_REPO: ${{ inputs.upstream_repo || vars.UPSTREAM_REPO }}
-  PROVIDER: ${{ inputs.provider || vars.PROVIDER || 'github' }}
+  # 任务上下文全部来自 Cloudflare Worker 推送的任务 JSON（tasks/*.json 或 repository_dispatch 的 client_payload），
+  # 不接收 workflow_dispatch 手动输入；仓库变量仅作为极端兜底，且低于 JSON 中的值。
+  UPSTREAM_REPO: ${{ vars.UPSTREAM_REPO }}
+  PROVIDER: ${{ vars.PROVIDER || 'github' }}
 
 jobs:
   review:
@@ -64,33 +36,11 @@ jobs:
 
       - name: Read task payload
         id: task
-        env:
-          # workflow_dispatch 时用输入兜底，其余场景走任务 JSON
-          INPUT_PROVIDER: ${{ inputs.provider || vars.PROVIDER || 'github' }}
-          INPUT_REPO: ${{ inputs.target_repo }}
-          INPUT_NUMBER: ${{ inputs.pr_number }}
-          INPUT_ISSUE: ${{ inputs.is_issue || 'false' }}
-          INPUT_MODE: ${{ inputs.mode || 'review' }}
-          INPUT_INSTRUCTION: ${{ inputs.instruction }}
-          INPUT_UPSTREAM: ${{ inputs.upstream_repo || vars.UPSTREAM_REPO }}
         run: |
           set -euo pipefail
 
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             echo '${{ toJson(github.event.client_payload) }}' > /tmp/task.json
-            TASK_FILE=""
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            # 手动触发：输入优先，缺的字段回落到仓库变量
-            jq -n \
-              --arg provider "$INPUT_PROVIDER" \
-              --arg repo "$INPUT_REPO" \
-              --arg number "$INPUT_NUMBER" \
-              --arg is_issue "$INPUT_ISSUE" \
-              --arg repo_url "$INPUT_UPSTREAM" \
-              --arg mode "$INPUT_MODE" \
-              --arg instruction "$INPUT_INSTRUCTION" \
-              '{provider: $provider, repo: $repo, pr_number: ($number | tonumber? // 0), is_issue: ($is_issue == "true"), repo_url: $repo_url, mode: $mode, instruction: $instruction}' \
-              > /tmp/task.json
             TASK_FILE=""
           else
             # 取本次 push 新增的 JSON；用 diff-tree，避免被其它改动干扰
@@ -101,8 +51,10 @@ jobs:
             cp "$TASK_FILE" /tmp/task.json
           fi
 
-          # 上游仓库 URL 的三级兜底：手动输入/仓库变量 → 任务 JSON → 按平台拼一个默认值
-          UPSTREAM="${UPSTREAM_REPO:-$(jq -r '.repo_url // .clone_url // .upstream_repo // ""' /tmp/task.json)}"
+          # 上游仓库 URL：以任务 JSON（Worker 推送时写入）为准，仓库变量 UPSTREAM_REPO 仅作兜底，
+          # 仍缺失时再按目标仓库 + 平台拼一个默认值
+          UPSTREAM=$(jq -r '.repo_url // .clone_url // .upstream_repo // ""' /tmp/task.json)
+          UPSTREAM="${UPSTREAM:-${UPSTREAM_REPO:-}}"
           TARGET_REPO=$(jq -r '.repo' /tmp/task.json)
           if [ -z "$UPSTREAM" ] && [ -n "$TARGET_REPO" ]; then
             case "$(jq -r '.provider' /tmp/task.json)" in
@@ -112,7 +64,7 @@ jobs:
             echo "未设置上游仓库 URL，按目标仓库推导：$UPSTREAM"
           fi
           if [ -z "$UPSTREAM" ]; then
-            echo "::error::缺少上游仓库 URL：请在仓库变量/输入里设置 UPSTREAM_REPO"
+            echo "::error::缺少上游仓库 URL：Worker 推送的任务 JSON 未包含 repo_url，且未配置仓库变量 UPSTREAM_REPO"
             exit 1
           fi
 

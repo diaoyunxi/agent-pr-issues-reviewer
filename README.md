@@ -37,7 +37,7 @@ Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上�
    `agents/prompt-review.txt`（评审用）与 `agents/prompt-work.txt`（干活用），由用户自行编写；
    只放一份 `agents/prompt.txt` 也可以，两种模式会共用它。
    代码由 agent 自己克隆，**不需要**往目标仓库塞 agent 脚本，也不需要改目标仓库的 workflow。
-   在**本仓库（fork）**的 Variables 里配好 `UPSTREAM_REPO`（上游仓库 URL，多个仓库用 workflow_dispatch 输入覆盖）。
+   在**本仓库（fork）**的 Variables 里配好 `UPSTREAM_REPO`（仅作全局兜底：上游仓库 URL 实际由 Worker 在每个任务 JSON 里按仓库分别带来，多个仓库无需手动切换）。
 3. **配置 App（推荐）**：建好 GitHub App 与 Gitee 应用，把私钥/令牌写进本仓库的 Secrets（见「App 身份配置」一节）。
    App 是可选项——不配就自动用个人令牌，链路照跑，只是评论与提交都以个人账号身份出现。
 4. **Worker**：在**仓库根目录**执行 `npx wrangler secret put GITHUB_PAT`，逐个写入密钥后 `npx wrangler deploy`。
@@ -108,8 +108,8 @@ Worker 与 Agent 两侧都按同一套优先级取令牌：**先换 App 令牌�
 要点：
 
 - **上游仓库 URL 是必填项**：本仓库（fork）只带 Worker / Agent / CI，真正的业务代码由 agent 自己克隆到 `/tmp`。
-  取值顺序：`workflow_dispatch` 输入 → 仓库变量 `UPSTREAM_REPO` → 任务 JSON 的
-  `repo_url`/`clone_url` → 按 `provider + repo` 拼默认地址。都拿不到会直接 `::error::` 退出。
+  取值顺序：任务 JSON 的 `repo_url`/`clone_url` → 仓库变量 `UPSTREAM_REPO` → 按
+  `provider + repo` 拼默认地址。都拿不到会直接 `::error::` 退出。
 - **不再 checkout 目标仓库**：job 只 checkout 本仓库（fork，里面就带 `agent/` 脚本），代码由
   `review.py` 克隆到 `/tmp` 的子目录，工作目录随之锁在仓库内。
 - **并发控制**：`concurrency` + `cancel-in-progress: true`，同一 PR 连续 push 只跑最后一次。
@@ -121,8 +121,9 @@ Worker 与 Agent 两侧都按同一套优先级取令牌：**先换 App 令牌�
   再 POST 换安装令牌；Gitee 侧没有换发接口，只探测 `GITEE_APP_TOKEN` 是否有效。
   两条路径任一步失败都落到 `PAT_TOKEN`，不会让整个 job 挂掉，因此该步骤**不需要 `continue-on-error`**。
   换到的令牌交给 agent 用于 `git clone` **与**回写评论，两边身份一致。
-- **手动补跑**：`workflow_dispatch` 可直接填上游仓库 URL、目标仓库、PR 号、`mode` 与
-  `instruction` 跑一次，适合在新仓库接入时先验证链路；`AGENT_CONFIG` / `AGENT_NAME`
+- **重新触发**：CI 没有手动 `workflow_dispatch`。要补跑一次，要么让 Worker 再 push 一条任务
+  JSON，要么（若启用 `repository_dispatch`）由 Worker 重新派发 `ai-review` 事件；所有参数
+  仍以 Worker 推送的任务 JSON 为准，不接收手工填写。`AGENT_CONFIG` / `AGENT_NAME`
   用仓库变量控制跑哪个 agent。
 - **模式透传**：任务 JSON 的 `mode` / `instruction` 由 `Read task payload` 步骤读出，
   分别写进 `MODE` / `INSTRUCTION` 环境变量给 agent；旧 JSON 缺 `mode` 时按 `review` 兜底。
@@ -151,7 +152,7 @@ Worker 与 Agent 两侧都按同一套优先级取令牌：**先换 App 令牌�
 | 系统提示词单独成 txt | `agents/prompt-review.txt` / `agents/prompt-work.txt`，按 `mode` 选，模型读的是文件内容 |
 | 两种模式共用一条链路 | `MODE` 环境变量 → `config.load_agent_config(mode=…)` 选提示词，`task_context.build_prompt()` 把 work 的要求写进首条消息 |
 | 其他 agent 设置成 json | `agents/config.json`，改完直接生效，不生成任何脚本 |
-| CI 需要上游仓库 URL | workflow 传 `UPSTREAM_REPO`（仓库变量/手动输入/任务 JSON 三级兜底），`review.py` 自己 clone |
+| CI 需要上游仓库 URL | 由 Worker 推送的任务 JSON 提供 `repo_url`（仓库变量 `UPSTREAM_REPO` 仅作兜底），`review.py` 自己 clone |
 
 ### agent 配置（`agents/config.json`）
 
@@ -235,7 +236,7 @@ CI 侧注入，脚本侧只读（真正必填的只有三个上游/模型相关�
 
 ### 任务 JSON 字段
 
-任务 JSON 由 Worker 生成（`/tmp/task.json`，`workflow_dispatch` 时由输入组装），
+任务 JSON 由 Worker 生成（`/tmp/task.json`，直接由 Webhook 报文解析而成），
 字段示例见 `agent/src/agents/task.example.json`：
 
 
