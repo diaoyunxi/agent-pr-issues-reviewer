@@ -120,6 +120,11 @@ def clone_repo(
         shutil.rmtree(target, ignore_errors=True)
         raise
 
+    # 去掉 remote 里的令牌：克隆用的是带令牌的 URL，但立刻把 origin 还原成公开地址，
+    # 避免令牌残留在 .git/config 被模型读到。推送认证交由执行器 sidecar 的
+    # credential helper 完成，模型全程拿不到令牌。
+    _run_git(["remote", "set-url", "origin", url], cwd=target, redact=redact)
+
     # 让 CI 日志与 agent 自己敲的 git 命令都不要跳出证书/凭据交互
     _run_git(["config", "advice.detachedHead", "false"], cwd=target, redact=redact)
     return target

@@ -173,8 +173,12 @@ Worker 与 Agent 两侧都按同一套优先级取令牌：**先换 App 令牌�
 - 命令在 `bash -lc` 下执行，`cwd` = 克隆出来的仓库目录，所以 `git diff`、`rg` 都是相对仓库跑的。
 - 支持管道、重定向、`&&`；单条命令默认 120s 超时，输出超 30000 字符会「掐头去尾」截断。
 - 命令失败**不抛异常**：把 `[exit N]` 与 stderr 一起回给模型，让它自己调整命令。
-- 环境变量做了清洗：带 `TOKEN`/`SECRET`/`PASSWORD`/`KEY` 的变量不会传给命令，
-  模型 `env` 不到 `AI_API_KEY` 与平台令牌；`GIT_TERMINAL_PROMPT=0` 避免卡在凭据交互。
+- **CI 下命令不直接执行，而是转发给「持密钥的执行器 sidecar」**（`executor.py`，独立进程，通过
+  Unix socket 通信）：真令牌只存在于执行器进程，模型发出的命令里只能用 `${GH_TOKEN}` /
+  `${GITEE_TOKEN}` 占位符，执行器侧替换真值并脱敏输出后再回传。于是模型既能 `git push` /
+  `gh` / `curl` 带令牌，又**永远拿不到令牌本身**。（`sanitize_env` 仍兜底：不带占位符的
+  命令在以剔除凭据的环境里运行，`GIT_TERMINAL_PROMPT=0` 避免卡在凭据交互。）
+- 无执行器时（本地冒烟/测试）回退为直接执行，此时 `env` 已被剔掉凭据。
 - 这只是「防手滑」：agent 与本进程同机，真正的隔离边界是 CI runner 容器本身。
 
 ### 克隆与安全
@@ -185,10 +189,13 @@ Worker 与 Agent 两侧都按同一套优先级取令牌：**先换 App 令牌�
   代价是耗时与流量更大，`GIT_TIMEOUT` 放宽到 1200s。
 - 克隆完由 `checkout_head()` 把工作区切到待审查提交：优先按 `head_sha` 检出，
   sha 在克隆结果里不可达时回退到 `head_ref` 分支，两者都没有则留在默认分支。
-- URL 里拼 `x-access-token:<token>@`（Gitee 用 `oauth2:`）。
+- URL 里拼 `x-access-token:<token>@`（Gitee 用 `oauth2:`）用于**克隆**，克隆完立刻把
+  `origin` 还原成公开地址，令牌**不留在** `.git/config`；推送认证交给执行器 sidecar 的
+  credential helper，模型读不到 `.git/config` 里的令牌。
 - 任何日志输出都过 `mask_url()`，报错信息也会把令牌替换成 `***`，不会泄到 Actions 日志里。
 - 令牌优先用 App 身份（GitHub 安装令牌 / Gitee 应用令牌），取不到再回退 `PAT_TOKEN`。
 - **CI 侧**：只传上游仓库 URL 与任务 JSON，**不再 checkout 代码**，也不需要待审查仓库里有别的文件。
+  真令牌仅在执行器 sidecar 进程内使用，AI 进程不持有。
 
 ### 运行流程
 

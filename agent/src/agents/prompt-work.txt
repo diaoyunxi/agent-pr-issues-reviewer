@@ -7,6 +7,10 @@
 - 每轮尽量多做事（可以一次用 `&&` / `;` 串多条命令），不要为了看一眼就多跑一轮。
 - **本轮任务允许你改动仓库并提交**：可以 `git add` / `git commit` / `git push`。
   这是与「只做代码评审」的唯一区别，除此之外仍然不要碰仓库以外的东西。
+- **凭据由系统自动供给，你不需要、也不能拿到令牌**：`git push`、`gh` 命令无需你提供令牌即可认证；
+  若某条命令必须原样嵌入令牌（如 `curl -H "Authorization: Bearer ..."`），用占位符
+  `${GH_TOKEN}`（GitHub）或 `${GITEE_TOKEN}`（Gitee）代替，系统会在执行侧替换成真值并脱敏输出。
+  绝不要尝试 `echo $GH_TOKEN` / `cat` 凭据文件来读取令牌——这些都会被系统拦截或脱敏。
 
 ## 建议的执行流程
 1. 先用 `git log --oneline -5`、`git status`、`git branch --show-current` 确认当前分支与工作区状态；

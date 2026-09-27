@@ -12,12 +12,17 @@ Agent 侧要么用 App 身份（GitHub 安装令牌 / Gitee 应用令牌），�
 令牌只在内存里用，克隆用的 URL 做了脱敏，不会出现在日志里。
 """
 
+import atexit
 import os
+import socket
+import subprocess
 import sys
+import time
 import traceback
 from pathlib import Path
 
 import requests
+from executor import is_ready
 
 from agent_runner import AgentRunError, run_agent
 from app_auth import (
@@ -73,6 +78,49 @@ def _report(provider: str, repo: str, number: int, token: str, body: str, is_iss
     return 0
 
 
+def _start_executor():
+    """拉起持密钥的执行器 sidecar（独立进程）。AI 的 bash 命令会经它的 socket 转发，
+    真令牌只存在于该进程，模型拿不到。返回 Popen，失败返回 None（回退本地执行）。"""
+    if os.environ.get("ENABLE_EXECUTOR") == "0":
+        return None
+    # Linux CI 用 Unix socket；无 AF_UNIX 的平台（如本地 Windows）回退 TCP
+    if hasattr(socket, "AF_UNIX") and not os.environ.get("EXECUTOR_PORT"):
+        os.environ.setdefault("EXECUTOR_SOCK", "/tmp/executor.sock")
+    else:
+        os.environ.setdefault("EXECUTOR_PORT", "8731")
+    script = Path(__file__).resolve().parent / "executor.py"
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, str(script)],
+            env=os.environ.copy(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as err:  # noqa: BLE001 - 执行器起不来就退回本地执行，不阻断审查
+        print(f"[review] 执行器启动失败，回退本地执行：{err}")
+        return None
+    for _ in range(50):
+        if is_ready():
+            break
+        time.sleep(0.1)
+    else:
+        print("[review] 执行器未及时就绪，回退本地执行")
+        _stop_executor(proc)
+        return None
+    print(f"[review] 执行器已就绪，AI 的 bash 走独立持密钥进程")
+    return proc
+
+
+def _stop_executor(proc) -> None:
+    if not proc or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except Exception:  # noqa: BLE001
+        proc.kill()
+
+
 def main() -> int:
     ctx = build_context()
     provider = ctx["provider"]
@@ -84,6 +132,11 @@ def main() -> int:
         mode = "review"
     title = TITLES[mode]
     print(f"[review] 执行模式：{mode}")
+
+    # 启动持密钥的执行器 sidecar；退出时无论成功失败都清理它
+    executor = _start_executor()
+    if executor:
+        atexit.register(_stop_executor, executor)
 
     provider_client: TokenProvider = build_token_provider(provider)
 
