@@ -350,8 +350,8 @@ function parseGiteePayload(payload: any, botName: string, isComment: boolean): R
       repo_url: pr.head?.repo?.clone_url ?? repoUrl,
       base_sha: pr.base?.sha ?? '',
       head_sha: pr.head?.sha ?? '',
-      base_ref: pr.base?.ref ?? '',
       // Gitee 的 PR 结构用 source_branch / target_branch，不是 head.ref / base.ref
+      base_ref: pr.base?.ref ?? pr.target_branch ?? '',
       head_ref: pr.head?.ref ?? pr.source_branch ?? '',
       created_at: new Date().toISOString(),
     }
