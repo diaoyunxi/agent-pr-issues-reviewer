@@ -12,7 +12,6 @@ agent 需要 `git log`、`git blame`、`git diff <base>...<head>` 这类跨历�
 import os
 import shutil
 import subprocess
-import tempfile
 import uuid
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
