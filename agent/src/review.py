@@ -22,8 +22,6 @@ import traceback
 from pathlib import Path
 
 import requests
-from executor import is_ready
-
 from agent_runner import AgentRunError, run_agent
 from app_auth import (
     TokenProvider,
@@ -35,8 +33,13 @@ from app_auth import (
     github_comment_url,
 )
 from config import ConfigError, build_agent_config
-from inline_comments import INLINE_COMMENTS_FILE, post_inline_comments, read_inline_comments
-from repo import RepoError, clone_repo, checkout_head, mask_url, sanitize_env
+from executor import is_ready
+from inline_comments import (
+    INLINE_COMMENTS_FILE,
+    post_inline_comments,
+    read_inline_comments,
+)
+from repo import RepoError, checkout_head, clone_repo, mask_url, sanitize_env
 from task_context import build_context, build_prompt
 from tools import ShellContext
 
@@ -108,7 +111,7 @@ def _start_executor():
         print("[review] 执行器未及时就绪，回退本地执行")
         _stop_executor(proc)
         return None
-    print(f"[review] 执行器已就绪，AI 的 bash 走独立持密钥进程")
+    print("[review] 执行器已就绪，AI 的 bash 走独立持密钥进程")
     return proc
 
 
