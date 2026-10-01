@@ -80,7 +80,7 @@ def _run_local(ctx: ShellContext, command: str) -> str:
     """无执行器时的本地回退：env 已被剔掉凭据，单条命令有超时与输出上限。"""
     try:
         proc = subprocess.run(
-            ["bash", "-lc", command],
+            ["bash", "-c", command],
             cwd=ctx.workdir,
             capture_output=True,
             text=True,
