@@ -49,16 +49,16 @@ def _():
     assert gi == 'https://oauth2:tok@gitee.com/o/r.git', gi
     # 已经有凭据 / 非 https 的不改写
     assert _authenticated_url(gh, 'other', 'github') == gh
-    assert _authenticated_url('/tmp/local/repo', 'tok', 'github') == '/tmp/local/repo'
+    assert _authenticated_url('/tmp/local/repo', 'tok', 'github') == '/tmp/local/repo'  # noqa: S108
 
 
 @case('sanitize_env 剔除密钥且不改动原 dict')
 def _():
     original = {'AI_API_KEY': 'k', 'GITHUB_TOKEN': 't', 'PATH': '/bin', 'FOO': 'bar'}
-    env = sanitize_env(original, workspace=Path('/tmp/ws'))
+    env = sanitize_env(original, workspace=Path('/tmp/ws'))  # noqa: S108
     assert 'AI_API_KEY' not in env and 'GITHUB_TOKEN' not in env
     assert env['FOO'] == 'bar' and env['PATH'] == '/bin'
-    assert env['HOME'] == '/tmp/ws' and env['PWD'] == '/tmp/ws'
+    assert env['HOME'] == '/tmp/ws' and env['PWD'] == '/tmp/ws'  # noqa: S108
     assert original['AI_API_KEY'] == 'k', '不得改动传入的 env'
 
 
@@ -178,7 +178,7 @@ def _():
     import subprocess
 
     def git(*args, cwd=None):
-        subprocess.run(['git', *args], cwd=cwd, check=True, capture_output=True, text=True)
+        subprocess.run(['git', *args], cwd=cwd, check=True, capture_output=True, text=True)  # noqa: S607
 
     with tempfile.TemporaryDirectory() as tmp:
         src = Path(tmp) / 'src'
@@ -206,14 +206,14 @@ def _():
 
         # 完整克隆：提交历史不是一个孤立的提交
         log = subprocess.run(
-            ['git', '-C', str(repo_dir), 'rev-list', '--count', 'HEAD'],
+            ['git', '-C', str(repo_dir), 'rev-list', '--count', 'HEAD'],  # noqa: S607
             check=True, capture_output=True, text=True,
         ).stdout.strip()
         assert int(log) >= 2, f'历史被截断，只有 {log} 个提交'
 
         # 完整克隆：远端所有分支的 ref 都在（非单分支克隆）
         refs = subprocess.run(
-            ['git', '-C', str(repo_dir), 'branch', '-r'],
+            ['git', '-C', str(repo_dir), 'branch', '-r'],  # noqa: S607
             check=True, capture_output=True, text=True,
         ).stdout
         assert 'origin/feat' in refs, f'缺少其他分支的 remote ref：{refs}'
@@ -224,7 +224,7 @@ def _():
     import subprocess
 
     def git(*args, cwd=None):
-        subprocess.run(['git', *args], cwd=cwd, check=True, capture_output=True, text=True)
+        subprocess.run(['git', *args], cwd=cwd, check=True, capture_output=True, text=True)  # noqa: S607
 
     with tempfile.TemporaryDirectory() as tmp:
         src = Path(tmp) / 'src'
@@ -236,7 +236,7 @@ def _():
         git('-C', str(src), 'add', '-A')
         git('-C', str(src), 'commit', '-qm', 'c1', '--no-gpg-sign')
         first = subprocess.run(
-            ['git', '-C', str(src), 'rev-parse', 'HEAD'],
+            ['git', '-C', str(src), 'rev-parse', 'HEAD'],  # noqa: S607
             check=True, capture_output=True, text=True,
         ).stdout.strip()
         (src / 'f.txt').write_text('v2', encoding='utf-8')
@@ -254,7 +254,7 @@ def _():
         # 假 sha → 回退到分支
         checkout_head(repo_dir, '0' * 40, 'feat')
         head = subprocess.run(
-            ['git', '-C', str(repo_dir), 'rev-parse', '--abbrev-ref', 'HEAD'],
+            ['git', '-C', str(repo_dir), 'rev-parse', '--abbrev-ref', 'HEAD'],  # noqa: S607
             check=True, capture_output=True, text=True,
         ).stdout.strip()
         assert head == 'feat', f'未回退到分支，当前在 {head}'

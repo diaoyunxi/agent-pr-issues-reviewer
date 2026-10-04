@@ -14,7 +14,7 @@ MAX_BODY_CHARS = 4_000
 # work 模式的要求是原文，尽量别截断
 MAX_INSTRUCTION_CHARS = 8_000
 
-TASK_FILE_HINT = Path("/tmp/task.json")
+TASK_FILE_HINT = Path("/tmp/task.json")  # noqa: S108
 
 
 def _from_task_file() -> dict:
