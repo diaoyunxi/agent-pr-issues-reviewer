@@ -51,14 +51,14 @@ def post_comment(provider: str, repo: str, number: int, token: str, body: str, i
     """把审查结果写回目标仓库的 PR/Issue 评论区。"""
     if provider == "gitee":
         resp = requests.post(
-            f"{gitee_comment_url(repo, number, is_issue)}?{gitee_query(token)}",
+            f"{gitee_comment_url(repo, number, is_issue, timeout=30)}?{gitee_query(token)}",
             headers=gitee_auth_headers(token),
             json={"body": body},
             timeout=30,
         )
     else:
         resp = requests.post(
-            github_comment_url(repo, number),
+            github_comment_url(repo, number, timeout=30),
             headers=auth_headers(token),
             json={"body": body},
             timeout=30,
