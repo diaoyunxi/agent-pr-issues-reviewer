@@ -111,7 +111,7 @@ def _start_executor():
         print("[review] 执行器未及时就绪，回退本地执行")
         _stop_executor(proc)
         return None
-    print(f"[review] 执行器已就绪，AI 的 bash 走独立持密钥进程")
+    print("[review] 执行器已就绪，AI 的 bash 走独立持密钥进程")
     return proc
 
 
