@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
-from config import ConfigError, build_agent_config, AgentConfig  # noqa: E402
+from config import AgentConfig, ConfigError, build_agent_config  # noqa: E402
 from repo import (  # noqa: E402
     RepoError,
     _authenticated_url,
