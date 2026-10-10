@@ -20,6 +20,8 @@ from agents import RunContextWrapper, function_tool
 from executor import resolve_address
 
 MAX_OUTPUT_CHARS = 30_000
+# 命令最大长度限制，防止超长命令导致 shell 参数溢出
+MAX_COMMAND_LENGTH = 8192
 DEFAULT_TIMEOUT = 120.0
 
 
@@ -77,6 +79,9 @@ def _run_remote(ctx: ShellContext, command: str) -> str:
 
 
 def _run_local(ctx: ShellContext, command: str) -> str:
+    """无执行器时的本地回退：env 已被剔掉凭据，单条命令有超时与输出上限。"""
+    if len(command) > MAX_COMMAND_LENGTH:
+        return f"命令过长（{len(command)} 字符），最大允许 {MAX_COMMAND_LENGTH} 字符"
     """无执行器时的本地回退：env 已被剔掉凭据，单条命令有超时与输出上限。"""
     try:
         proc = subprocess.run(
