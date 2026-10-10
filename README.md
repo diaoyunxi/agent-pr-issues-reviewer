@@ -4,7 +4,7 @@
 
 控制面（你 **fork 的仓库**）与数据面（目标业务仓库）分离：Worker 只负责「登记任务」，Actions 只负责「跑 Agent + 回写评论」。
 
-Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上游仓库 `git clone` 到 `/tmp` 的子目录，然后在仓库里自己读代码；行为由目标仓库里的 `agents/config.json` 与两份提示词（`prompt-review.txt` / `prompt-work.txt`）决定，改配置不用改代码。
+Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上游仓库 `git clone` 到 `/tmp` 的子目录，然后在仓库里自己读代码；行为由目标仓库里的 `src/config.json` 与两份提示词（`prompt-review.txt` / `prompt-work.txt`）决定，改配置不用改代码。
 
 触发方式有两种 **mode**：
 
@@ -32,10 +32,10 @@ Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上�
 
 1. **Fork 本仓库**：点 GitHub 右上角 Fork，得到你自己的 `你的名/agent-pr-issues-reviewer`。
    仓库里已经包含 `.github/workflows/ai-review.yml`（CI）与 `tasks/`（任务目录），无需额外搬运任何文件。
-2. **目标仓库**：在**真正要被审查的仓库**（可以是任意别的仓库）里放配置与提示词到 `agents/` 目录——
-   `agents/config.json`（可从 `agent/src/agents/config.example.json` 复制），提示词按模式拆成
-   `agents/prompt-review.txt`（评审用）与 `agents/prompt-work.txt`（干活用），由用户自行编写；
-   只放一份 `agents/prompt.txt` 也可以，两种模式会共用它。
+2. **目标仓库**：在**真正要被审查的仓库**（可以是任意别的仓库）里放配置与提示词到 `src/` 目录——
+   `src/config.json`（可从 `agent/src/src/config.example.json` 复制），提示词按模式拆成
+   `src/prompt-review.txt`（评审用）与 `src/prompt-work.txt`（干活用），由用户自行编写；
+   只放一份 `src/prompt.txt` 也可以，两种模式会共用它。
    代码由 agent 自己克隆，**不需要**往目标仓库塞 agent 脚本，也不需要改目标仓库的 workflow。
    在**本仓库（fork）**的 Variables 里配好 `UPSTREAM_REPO`（仅作全局兜底：上游仓库 URL 实际由 Worker 在每个任务 JSON 里按仓库分别带来，多个仓库无需手动切换）。
 3. **配置 GitHub App（可选）**：建好 GitHub App，把私钥写进本仓库的 Secrets（见「App 身份」一节）。
@@ -147,12 +147,12 @@ Worker 与 Agent 两侧都按同一套优先级取令牌：**先换 App 令牌�
 | 完整克隆（不浅克隆） | `git clone --no-single-branch`：全量历史 + 所有分支的 remote ref，`git log`/`git blame`/跨提交 diff 都能用 |
 | 限制工作目录在仓库内 | `bash` 工具的 `cwd` 钉在仓库根 + `sanitize_env` 把 `HOME`/`PWD` 也指过去 |
 | 只给 bash 工具 | `tools.py` 只实现一个 `bash` function tool，`config.json` 里 `tools: ["bash"]` |
-| 系统提示词单独成 txt | `agents/prompt-review.txt` / `agents/prompt-work.txt`，按 `mode` 选，模型读的是文件内容 |
+| 系统提示词单独成 txt | `src/prompt-review.txt` / `src/prompt-work.txt`，按 `mode` 选，模型读的是文件内容 |
 | 两种模式共用一条链路 | `MODE` 环境变量 → `config.load_agent_config(mode=…)` 选提示词，`task_context.build_prompt()` 把 work 的要求写进首条消息 |
-| 其他 agent 设置成 json | `agents/config.json`，改完直接生效，不生成任何脚本 |
+| 其他 agent 设置成 json | `src/config.json`，改完直接生效，不生成任何脚本 |
 | CI 需要上游仓库 URL | 由 Worker 推送的任务 JSON 提供 `repo_url`（仓库变量 `UPSTREAM_REPO` 仅作兜底），`review.py` 自己 clone |
 
-### agent 配置（`agents/config.json`）
+### agent 配置（`src/config.json`）
 
 
 - 顶层每个 key 是一个 agent 角色；`AGENT_NAME` 决定这次跑哪一个（不填取排序后第一个）。
@@ -165,7 +165,7 @@ Worker 与 Agent 两侧都按同一套优先级取令牌：**先换 App 令牌�
 - `workdir` 必须落在仓库目录内，配到仓库外会直接报错退出。
 - `tools` 目前只认 `bash`；写未知工具名会在启动时报错，不会静默忽略。
 - 顶层也可以直接写扁平结构（只有 `prompt_file`/`tools`/`model` 等字段）当单 agent 用。
-- 路径可用 `AGENT_CONFIG` 覆盖（默认 `agents/config.json`）。
+- 路径可用 `AGENT_CONFIG` 覆盖（默认 `src/config.json`）。
 - `allow_inline_comments`（布尔，默认 `true`）：仅对 `review` 模式生效。开启后，模型可以把
   针对**具体代码行**的评审意见写成工作目录下的 `ai-review-inline.json`，系统会把这些意见作为
   **行内评论**挂到 PR 的 diff 对应行上（GitHub 用 `line`+`side`，Gitee 用换算后的 `position`）。
@@ -204,7 +204,7 @@ Worker 与 Agent 两侧都按同一套优先级取令牌：**先换 App 令牌�
 
 1. `review.py` 读任务上下文（环境变量优先，其次 `/tmp/task.json`）；
 2. 换令牌 → **完整克隆**上游仓库到 `/tmp/repo-xxxx`，再 `git checkout` 到待审查的 head；
-3. 读克隆出来的仓库里的 `agents/config.json`，并按 `MODE` 选 `prompt-review.txt` / `prompt-work.txt`（路径可用 `AGENT_CONFIG` 调整）；
+3. 读克隆出来的仓库里的 `src/config.json`，并按 `MODE` 选 `prompt-review.txt` / `prompt-work.txt`（路径可用 `AGENT_CONFIG` 调整）；
 4. 组装 agent（`bash` 工具 + 系统提示词 + 首条任务消息），跑 `Runner.run()`；
 5. 把最终正文作为评论回写目标仓库（`review` 标题是「AI 代码审查」，`work` 是「AI 执行结果」）；
    任何环节失败都会回写失败评论，不会静默丢任务。
@@ -221,7 +221,7 @@ Worker 与 Agent 两侧都按同一套优先级取令牌：**先换 App 令牌�
 - 平台差异被封装在 `inline_comments.py` 里：GitHub 用官方推荐的 `line` + `side`（文件行号，直观），
   Gitee 接口只认 diff 内的 `position`，由 `git diff` 现算；
 - 任何一条行内评论失败都只记日志、不阻断其余评论与总结评论的回写；
-- 开关在配置里：`agents/config.json` 的 `allow_inline_comments`（默认 `true`），设为 `false` 即只出总结。
+- 开关在配置里：`src/config.json` 的 `allow_inline_comments`（默认 `true`），设为 `false` 即只出总结。
 
 注意：`side` 用 `RIGHT`（新增/修改行，落在 `+` 一侧）或 `LEFT`（被删行，落在 `-` 一侧），
 `line` 必须是文件行号且落在改动附近，否则评论可能贴不到正确位置；Issue 没有 diff，不会走行内评论。
@@ -236,7 +236,7 @@ CI 侧注入，脚本侧只读（真正必填的只有三个上游/模型相关�
 | `AI_API_KEY` | ✅ | 模型 API Key |
 | `AI_API_BASE` | ❌ | 模型 API 基址，默认 `https://api.openai.com/v1`（DeepSeek 等兼容网关填自己的） |
 | `AI_MODEL` | ❌ | 模型名，默认 `gpt-4o-mini` |
-| `AGENT_CONFIG` | ❌ | 配置文件路径（相对克隆出来的仓库），默认 `agents/config.json` |
+| `AGENT_CONFIG` | ❌ | 配置文件路径（相对克隆出来的仓库），默认 `src/config.json` |
 | `AGENT_NAME` | ❌ | 跑配置里的哪个 agent，默认排序后第一个 |
 | `MODE` | ❌ | 执行模式 `review` / `work`，默认 `review`；决定用哪份提示词 |
 | `INSTRUCTION` | ❌ | `work` 模式的自然语言要求，会写进模型首条消息 |
@@ -253,7 +253,7 @@ CI 侧注入，脚本侧只读（真正必填的只有三个上游/模型相关�
 ### 任务 JSON 字段
 
 任务 JSON 由 Worker 生成（`/tmp/task.json`，直接由 Webhook 报文解析而成），
-字段示例见 `agent/src/agents/task.example.json`：
+字段示例见 `agent/src/src/task.example.json`：
 
 
 `repo_url` 是上游仓库地址（没有它时 CI 会按 `provider + repo` 拼默认地址，
