@@ -47,7 +47,7 @@ COMMENT_MARKER = "<!-- ai-review-agent -->"
 # 评论标题按模式区分，同一 PR 上 review / work 的产出一眼能分清
 TITLES = {"review": "## 🤖 AI 代码审查", "work": "## 🤖 AI 执行结果"}
 # 克隆根目录：所有仓库都放在 /tmp 的子目录下，跑完即随容器销毁
-CLONE_ROOT = os.environ.get("CLONE_ROOT", "/tmp")
+CLONE_ROOT = os.environ.get("CLONE_ROOT", "/tmp")  # noqa: S108
 
 
 def post_comment(provider: str, repo: str, number: int, token: str, body: str, is_issue: bool) -> None:
@@ -89,7 +89,7 @@ def _start_executor():
         return None
     # Linux CI 用 Unix socket；无 AF_UNIX 的平台（如本地 Windows）回退 TCP
     if hasattr(socket, "AF_UNIX") and not os.environ.get("EXECUTOR_PORT"):
-        os.environ.setdefault("EXECUTOR_SOCK", "/tmp/executor.sock")
+        os.environ.setdefault("EXECUTOR_SOCK", "/tmp/executor.sock")  # noqa: S108
     else:
         os.environ.setdefault("EXECUTOR_PORT", "8731")
     script = Path(__file__).resolve().parent / "executor.py"

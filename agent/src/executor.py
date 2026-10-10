@@ -27,7 +27,7 @@ from app_auth import build_token_provider
 from repo import sanitize_env
 
 SECRET_MARKERS = ("TOKEN", "SECRET", "PASSWORD", "KEY")
-SOCK_PATH = os.environ.get("EXECUTOR_SOCK", "/tmp/executor.sock")
+SOCK_PATH = os.environ.get("EXECUTOR_SOCK", "/tmp/executor.sock")  # noqa: S108
 DEFAULT_PORT = int(os.environ.get("EXECUTOR_PORT", "8731"))
 # 解析出的令牌往往很长，短于该长度的串不做全量脱敏，避免误伤正常输出
 MIN_REDACT_LEN = 8
@@ -111,7 +111,7 @@ def _setup_gh(secrets: dict) -> None:
         return
     try:
         subprocess.run(
-            ["gh", "auth", "login", "--with-token"],
+            ["gh", "auth", "login", "--with-token"],  # noqa: S607
             input=tok, text=True, timeout=30, capture_output=True,
         )
     except Exception:  # noqa: BLE001 - gh 不可用就跳过，不影响 git/curl 路径
@@ -141,7 +141,7 @@ def _run_command(command: str, cwd: str | None, timeout: float, secrets: dict, c
 
     try:
         proc = subprocess.run(
-            ["bash", "-lc", command],
+            ["bash", "-lc", command],  # noqa: S607
             cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env,
         )
     except subprocess.TimeoutExpired:

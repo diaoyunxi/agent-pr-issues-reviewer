@@ -86,7 +86,7 @@ def _to_repo_path(path_str: str, workspace: Path, repo_dir: Path) -> str:
 def _run_git(args: list[str], cwd: Path) -> str:
     try:
         proc = subprocess.run(
-            ["git", *args],
+            ["git", *args],  # noqa: S607
             cwd=str(cwd),
             capture_output=True,
             text=True,

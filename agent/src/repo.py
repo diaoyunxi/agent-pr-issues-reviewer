@@ -51,7 +51,7 @@ def _run_git(args: list[str], cwd: Path | None = None, redact: dict[str, str] | 
     """跑一条 git 命令；失败时把输出里的令牌脱敏后再抛出来。"""
     try:
         proc = subprocess.run(
-            ["git", *args],
+            ["git", *args],  # noqa: S607
             cwd=str(cwd) if cwd else None,
             capture_output=True,
             text=True,
@@ -80,7 +80,7 @@ def clone_repo(
     branch: str = "",
     base_sha: str = "",
     head_sha: str = "",
-    workdir: str = "/tmp",
+    workdir: str = "/tmp",  # noqa: S108
 ) -> Path:
     """**完整克隆**目标仓库到 /tmp 的一个子目录，返回仓库根目录。
 
