@@ -1,0 +1,11 @@
+{
+  "code-reviewer": {
+    "prompt_file_review": "prompt-review.txt",
+    "prompt_file_work": "prompt-work.txt",
+    "prompt_file": "prompt.txt",
+    "tools": ["bash"],
+    "model": "gpt-4o",
+    "workdir": ".agent-workdir",
+    "allow_inline_comments": true
+  }
+}
