@@ -24,6 +24,9 @@ Agent 侧是一个**只有 bash 工具**的 OpenAI Agents SDK agent：它把上�
 
 > Worker 的 `wrangler.toml` / `package.json` / `tsconfig.json` 都放在**仓库根目录**，
 > 这样 Cloudflare 的 Git 集成（Workers Builds）无需额外配置 root directory 就能自动部署；
+
+> **注意：** `agents/` 和 `tasks/` 目录需要在首次运行时手动创建，或通过配置文件自动生成。
+
 > 入口文件通过 `wrangler.toml` 的 `main = "worker/src/index.ts"` 指向。
 
 ## 部署步骤
