@@ -20,7 +20,8 @@ def build_model(cfg: AgentConfig):
     if not cfg.api_key:
         raise AgentRunError("缺少 AI_API_KEY，无法调用模型")
     client = AsyncOpenAI(api_key=cfg.api_key, base_url=cfg.api_base or None)
-    return OpenAIChatCompletionsModel(model=cfg.model or os.environ.get("AI_MODEL", "gpt-4o-mini"), openai_client=client)
+    model_name = cfg.model or os.environ.get("AI_MODEL", "gpt-4o-mini")
+    return OpenAIChatCompletionsModel(model=model_name, openai_client=client)
 
 
 def build_agent(cfg: AgentConfig, shell: ShellContext) -> Agent:

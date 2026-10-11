@@ -88,7 +88,7 @@ def _run_git(args: list[str], cwd: Path) -> str:
         proc = subprocess.run(
             ["git", *args],  # noqa: S607
             cwd=str(cwd),
-            capture_output=True,
+            check=False, capture_output=True,
             text=True,
             timeout=300,
         )
