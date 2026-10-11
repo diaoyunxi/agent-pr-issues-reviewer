@@ -186,7 +186,7 @@ def _post_one(
             json={"body": body, "commit_id": head_sha, "path": path, "line": line, "side": side},
             timeout=30,
         )
-    if resp.status_code >= 400:
+    if resp.status_code >= HTTP_CLIENT_ERROR_START:
         raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:300]}")
 
 
