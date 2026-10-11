@@ -26,6 +26,9 @@ from app_auth import (
     github_inline_comment_url,
 )
 
+# HTTP 4xx 客户端错误起始状态码
+HTTP_CLIENT_ERROR_START = 400
+
 # 模型写出、review.py 读取的约定文件名（位于 agent 工作目录内）
 INLINE_COMMENTS_FILE = "ai-review-inline.json"
 
