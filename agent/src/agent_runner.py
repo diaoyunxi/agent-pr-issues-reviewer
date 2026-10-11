@@ -2,7 +2,6 @@
 
 import asyncio
 import os
-from pathlib import Path
 
 from agents import Agent, ModelSettings, Runner
 from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
@@ -33,7 +32,7 @@ def build_agent(cfg: AgentConfig, shell: ShellContext) -> Agent:
     )
 
 
-def run_agent(cfg: AgentConfig, shell: ShellContext, prompt: str, workdir: Path) -> str:
+def run_agent(cfg: AgentConfig, shell: ShellContext, prompt: str) -> str:
     """跑一轮完整对话，返回模型的最终评审正文。
 
     注意：不再调用 os.chdir() 修改进程全局工作目录。bash 工具的 cwd 已由
