@@ -165,9 +165,13 @@ def _recvall(conn: socket.socket, n: int) -> bytes:
     return buf
 
 
+# Socket 消息头大小（4 字节无符号整数，big-endian）
+_HEADER_SIZE = 4
+
+
 def _recv_json(conn: socket.socket):
-    hdr = _recvall(conn, 4)
-    if len(hdr) < 4:
+    hdr = _recvall(conn, _HEADER_SIZE)
+    if len(hdr) < _HEADER_SIZE:
         return None
     n = struct.unpack(">I", hdr)[0]
     return json.loads(_recvall(conn, n).decode("utf-8"))
