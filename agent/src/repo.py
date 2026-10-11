@@ -52,7 +52,7 @@ def _run_git(args: list[str], cwd: Path | None = None, redact: dict[str, str] | 
         proc = subprocess.run(
             ["git", *args],  # noqa: S607
             cwd=str(cwd) if cwd else None,
-            capture_output=True,
+            check=False, capture_output=True,
             text=True,
             timeout=GIT_TIMEOUT,
         )

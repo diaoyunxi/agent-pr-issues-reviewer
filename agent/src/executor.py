@@ -112,7 +112,7 @@ def _setup_gh(secrets: dict) -> None:
     try:
         subprocess.run(
             ["gh", "auth", "login", "--with-token"],  # noqa: S607
-            input=tok, text=True, timeout=30, capture_output=True,
+            input=tok, text=True, timeout=30, check=False, capture_output=True,
         )
     except Exception:  # noqa: BLE001 - gh 不可用就跳过，不影响 git/curl 路径
         pass
@@ -142,7 +142,7 @@ def _run_command(command: str, cwd: str | None, timeout: float, secrets: dict, c
     try:
         proc = subprocess.run(
             ["bash", "-lc", command],  # noqa: S607
-            cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env,
+            cwd=cwd, check=False, capture_output=True, text=True, timeout=timeout, env=env,
         )
     except subprocess.TimeoutExpired:
         return "(命令超时，请缩小范围后重试)", "", 124
