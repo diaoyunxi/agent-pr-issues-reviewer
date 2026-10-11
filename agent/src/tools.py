@@ -16,8 +16,9 @@ import struct
 import subprocess
 from dataclasses import dataclass
 
-from agents import RunContextWrapper, function_tool
 from executor import resolve_address
+
+from agents import RunContextWrapper, function_tool
 
 MAX_OUTPUT_CHARS = 30_000
 # 命令最大长度限制，防止超长命令导致 shell 参数溢出

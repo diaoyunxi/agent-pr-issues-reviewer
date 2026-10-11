@@ -194,9 +194,8 @@ def _handle(conn: socket.socket, secrets: dict, creds_path: Path | None) -> None
 
 def serve() -> None:
     family, addr = resolve_address()
-    if _use_unix():
-        if os.path.exists(addr):
-            os.remove(addr)
+    if _use_unix() and os.path.exists(addr):
+        os.remove(addr)
     secrets = _collect_secrets()
     creds_path = _write_git_creds(secrets)
     _setup_gh(secrets)

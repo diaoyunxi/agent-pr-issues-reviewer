@@ -4,11 +4,12 @@ import asyncio
 import os
 from pathlib import Path
 
-from agents import Agent, ModelSettings, Runner
 from agents.models.openai_chatcompletions import OpenAIChatCompletionsModel
 from config import AgentConfig
 from openai import AsyncOpenAI
 from tools import ShellContext, build_tools
+
+from agents import Agent, ModelSettings, Runner
 
 
 class AgentRunError(RuntimeError):
