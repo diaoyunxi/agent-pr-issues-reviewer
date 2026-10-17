@@ -1,4 +1,4 @@
 # Core dependencies
-openai>=3.26.0
+openai>=3.31.0
 openai-agents>=0.0.1
 requests>=2.34.2
