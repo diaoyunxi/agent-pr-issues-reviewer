@@ -1,3 +1,5 @@
+> [← 返回文档目录](../README.md) ｜ 原文件：`CONTRIBUTING.md`。
+
 # 贡献指南
 
 感谢你对 AI PR/Issues Reviewer 的关注！

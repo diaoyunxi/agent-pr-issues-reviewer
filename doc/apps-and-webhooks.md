@@ -1,3 +1,5 @@
+> [← 返回文档目录](../README.md) ｜ 原文件：`APPS-AND-WEBHOOKS.md`。
+
 # GitHub App 权限与 Gitee Webhook 事件清单
 
 依据 `worker/src/index.ts`（事件解析）、`worker/src/app-auth.ts`（App 换令牌）与 `agent/src`（克隆、回写评论、work 模式 push）实际用到的能力整理。
