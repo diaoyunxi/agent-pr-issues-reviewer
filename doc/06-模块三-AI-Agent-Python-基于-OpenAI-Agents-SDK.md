@@ -125,7 +125,7 @@ CI 侧注入，脚本侧只读（真正必填的只有三个上游/模型相关�
 ### 任务 JSON 字段
 
 任务 JSON 由 Worker 生成（`/tmp/task.json`，直接由 Webhook 报文解析而成），
-字段示例见 `agent/src/src/task.example.json`：
+字段示例见 `agent/src/agents/task.example.json`：
 
 
 `repo_url` 是上游仓库地址（没有它时 CI 会按 `provider + repo` 拼默认地址，
