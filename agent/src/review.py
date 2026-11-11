@@ -22,7 +22,7 @@ import traceback
 from pathlib import Path
 
 import requests
-from agent_runner import AgentRunError, run_agent
+from agent_runner import run_agent
 from app_auth import (
     TokenProvider,
     auth_headers,
