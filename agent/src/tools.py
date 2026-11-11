@@ -87,7 +87,7 @@ def _run_local(ctx: ShellContext, command: str) -> str:
         proc = subprocess.run(
             ["bash", "-lc", command],  # noqa: S607
             cwd=ctx.workdir,
-            capture_output=True,
+            check=False, capture_output=True,
             text=True,
             timeout=ctx.timeout,
             env=ctx.env,

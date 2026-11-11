@@ -108,7 +108,12 @@ class TokenProvider:
 
         now = int(time.time())
         header = _b64url(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
-        payload = _b64url(json.dumps({"iat": now - JWT_BACKDATE_SECONDS, "exp": now + JWT_TTL_SECONDS, "iss": str(self.app_id)}).encode())
+        jwt_claims = {
+            "iat": now - JWT_BACKDATE_SECONDS,
+            "exp": now + JWT_TTL_SECONDS,
+            "iss": str(self.app_id),
+        }
+        payload = _b64url(json.dumps(jwt_claims).encode())
         signing_input = f"{header}.{payload}".encode()
 
         key = serialization.load_pem_private_key(self.private_key.encode(), password=None)
