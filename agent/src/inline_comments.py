@@ -174,14 +174,14 @@ def _post_one(
         if position is None:
             raise RuntimeError(f"在 diff 中找不到 {path}:{line}({side}) 对应的位置")
         resp = requests.post(
-            f"{gitee_inline_comment_url(repo, number, timeout=30)}?{gitee_query(token)}",
+            f"{gitee_inline_comment_url(repo, number)}?{gitee_query(token)}",
             headers=gitee_auth_headers(token),
             json={"body": body, "commit_id": head_sha, "path": path, "position": position},
             timeout=30,
         )
     else:
         resp = requests.post(
-            github_inline_comment_url(repo, number, timeout=30),
+            github_inline_comment_url(repo, number),
             headers={**auth_headers(token), "Accept": "application/vnd.github+json"},
             json={"body": body, "commit_id": head_sha, "path": path, "line": line, "side": side},
             timeout=30,
