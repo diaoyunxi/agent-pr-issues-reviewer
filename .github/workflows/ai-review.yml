@@ -36,15 +36,23 @@ jobs:
 
       - name: Read task payload
         id: task
+        env:
+          # client_payload 含外部 issue / PR 的标题、正文与指令，属于不可信输入。
+          # 绝不能把 ${{ toJson(...) }} 直接展开进 run 脚本：payload 里的单引号
+          # 可以闭合 echo 的引号并注入任意命令，进而读取 checkout 写入
+          # .git/config 的 PAT_TOKEN。统一经 env 传递，由 shell 原样写入文件。
+          TASK_JSON: ${{ toJson(github.event.client_payload) }}
+          EVENT_NAME: ${{ github.event_name }}
+          COMMIT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
-          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            echo '${{ toJson(github.event.client_payload) }}' > /tmp/task.json
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            printf '%s' "$TASK_JSON" > /tmp/task.json
             TASK_FILE=""
           else
             # 取本次 push 新增的 JSON；用 diff-tree，避免被其它改动干扰
-            TASK_FILE=$(git diff-tree --no-commit-id --name-only -r "${{ github.sha }}" | grep '^tasks/.*\.json$' | head -n 1 || true)
+            TASK_FILE=$(git diff-tree --no-commit-id --name-only -r "$COMMIT_SHA" | grep '^tasks/.*\.json$' | head -n 1 || true)
             if [ -z "$TASK_FILE" ]; then
               echo "无任务文件，跳过" && exit 0
             fi
@@ -68,22 +76,26 @@ jobs:
             exit 1
           fi
 
-          echo "task_file=$TASK_FILE" >> "$GITHUB_OUTPUT"
-          echo "provider=$(jq -r '.provider' /tmp/task.json)" >> "$GITHUB_OUTPUT"
-          echo "target_repo=$TARGET_REPO" >> "$GITHUB_OUTPUT"
-          echo "pr_number=$(jq -r '.pr_number' /tmp/task.json)" >> "$GITHUB_OUTPUT"
-          echo "is_issue=$(jq -r '.is_issue' /tmp/task.json)" >> "$GITHUB_OUTPUT"
-          echo "upstream_repo=$UPSTREAM" >> "$GITHUB_OUTPUT"
+          # $GITHUB_OUTPUT 按行解析 key=value；不可信字段里的换行会注入额外的
+          # output 键（例如伪造 upstream_repo / provider），写之前必须剥离换行。
+          out() { printf '%s=%s\n' "$1" "$(printf '%s' "$2" | tr -d '\r\n')" >> "$GITHUB_OUTPUT"; }
+
+          out "task_file" "$TASK_FILE"
+          out "provider" "$(jq -r '.provider' /tmp/task.json)"
+          out "target_repo" "$TARGET_REPO"
+          out "pr_number" "$(jq -r '.pr_number' /tmp/task.json)"
+          out "is_issue" "$(jq -r '.is_issue' /tmp/task.json)"
+          out "upstream_repo" "$UPSTREAM"
           # 旧任务 JSON 没有 mode 字段，一律按 review 处理，保证向后兼容
-          echo "mode=$(jq -r '.mode // "review"' /tmp/task.json)" >> "$GITHUB_OUTPUT"
-          echo "instruction=$(jq -r '.instruction // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
-          echo "title=$(jq -r '.title // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
-          echo "html_url=$(jq -r '.html_url // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
-          echo "user=$(jq -r '.user // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
-          echo "base_sha=$(jq -r '.base_sha // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
-          echo "head_sha=$(jq -r '.head_sha // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
-          echo "base_ref=$(jq -r '.base_ref // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
-          echo "head_ref=$(jq -r '.head_ref // ""' /tmp/task.json)" >> "$GITHUB_OUTPUT"
+          out "mode" "$(jq -r '.mode // "review"' /tmp/task.json)"
+          out "instruction" "$(jq -r '.instruction // ""' /tmp/task.json)"
+          out "title" "$(jq -r '.title // ""' /tmp/task.json)"
+          out "html_url" "$(jq -r '.html_url // ""' /tmp/task.json)"
+          out "user" "$(jq -r '.user // ""' /tmp/task.json)"
+          out "base_sha" "$(jq -r '.base_sha // ""' /tmp/task.json)"
+          out "head_sha" "$(jq -r '.head_sha // ""' /tmp/task.json)"
+          out "base_ref" "$(jq -r '.base_ref // ""' /tmp/task.json)"
+          out "head_ref" "$(jq -r '.head_ref // ""' /tmp/task.json)"
 
       - name: Issue app installation token
         id: auth
