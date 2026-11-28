@@ -78,7 +78,24 @@ jobs:
 
           # $GITHUB_OUTPUT 按行解析 key=value；不可信字段里的换行会注入额外的
           # output 键（例如伪造 upstream_repo / provider），写之前必须剥离换行。
+          # 单行字段用 out()；多行字段（instruction / title）用 out_multiline() 保留原始换行。
           out() { printf '%s=%s\n' "$1" "$(printf '%s' "$2" | tr -d '\r\n')" >> "$GITHUB_OUTPUT"; }
+
+          # heredoc 格式写入多行 output：保留原始换行，同时用随机 delimiter 防止
+          # 不可信内容伪造结束标记、注入额外的 output 键。
+          out_multiline() {
+            local key="$1" value="$2" delim
+            value="${value//$'\r'/}"
+            delim="EOF_$(openssl rand -hex 16)"
+            while printf '%s\n' "$value" | grep -qxF -- "$delim"; do
+              delim="EOF_$(openssl rand -hex 16)"
+            done
+            {
+              printf '%s<<%s\n' "$key" "$delim"
+              printf '%s\n' "$value"
+              printf '%s\n' "$delim"
+            } >> "$GITHUB_OUTPUT"
+          }
 
           out "task_file" "$TASK_FILE"
           out "provider" "$(jq -r '.provider' /tmp/task.json)"
@@ -88,8 +105,9 @@ jobs:
           out "upstream_repo" "$UPSTREAM"
           # 旧任务 JSON 没有 mode 字段，一律按 review 处理，保证向后兼容
           out "mode" "$(jq -r '.mode // "review"' /tmp/task.json)"
-          out "instruction" "$(jq -r '.instruction // ""' /tmp/task.json)"
-          out "title" "$(jq -r '.title // ""' /tmp/task.json)"
+          # instruction / title 可能是多行，必须保留换行
+          out_multiline "instruction" "$(jq -r '.instruction // ""' /tmp/task.json)"
+          out_multiline "title" "$(jq -r '.title // ""' /tmp/task.json)"
           out "html_url" "$(jq -r '.html_url // ""' /tmp/task.json)"
           out "user" "$(jq -r '.user // ""' /tmp/task.json)"
           out "base_sha" "$(jq -r '.base_sha // ""' /tmp/task.json)"
